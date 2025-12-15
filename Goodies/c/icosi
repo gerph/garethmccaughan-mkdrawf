@@ -1,4 +1,4 @@
-/* make an icosahedron
+/* make an icosahedron (interactive)
  *
  * The Clever Fact is: you can make a dodecahedron by starting with a cube
  * and putting a "tent" on top of each face. The tent needs to have "height"
@@ -16,12 +16,20 @@
 #define BIG	(1+HEIGHT)
 #define SMALL	(1-OFFSET)
 
-double DISTANCE=10;
+double DISTANCE=5;
 /*#define DISTANCE 10*/
 
 #define FACES 12
 
 #undef LABEL
+
+#include "swis.h"
+
+#define plot(op, x, y) _swix(OS_Plot, _INR(0, 2), op, x, y)
+#define chr_in(ch) _swi(OS_ReadC, _RETURN(0))
+#define chr_out(ch) _swix(OS_WriteC, _IN(0), ch)
+#define gcol(col) _swix(OS_WriteC, _IN(0), 18), _swix(OS_WriteC, _IN(0), 0), _swix(OS_WriteC, _IN(0), col)
+
 
 typedef double point[3];
 
