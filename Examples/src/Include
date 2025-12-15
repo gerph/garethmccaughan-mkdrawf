@@ -1,0 +1,29 @@
+# Demonstration of the Include feature.
+# You should be in the Examples directory to do this.
+
+FontTable {
+  1 "Trinity.Medium.Italic"
+}
+
+Path {
+  Move 100 100
+  Line 300 300
+}
+
+Include "Src.Koch"
+
+Text {
+  StartAt 200 200
+  Size 20 20
+  Style 1
+  Text "Large text"
+}
+
+Include "Src.Circles"
+
+Text {
+  StartAt 200 200
+  Size 10 10
+  Style 1
+  Text "Small text"
+}

@@ -1,0 +1,26 @@
+# New For loop syntaxes.
+
+#--------------------------------------------------------------
+
+# NB: the token-list For would be more useful if I improved
+# the semantics of token lists. This may well happen. (Consider
+# this to be advance notice of a possible incompatible change.
+# I don't have a sign saying "Beware of the Leopard".)
+
+for $t in { 100 120 125 140 150 155 160 165 200 } do {
+  path {
+    width 4
+    move $t 100
+    rline 0 100
+  }
+}
+
+#--------------------------------------------------------------
+
+path { move 20 320 line 20 20 line 320 20 }
+for $x from 20 to 320 step 10 {
+  path {
+    move $x 20
+    line 20 ( 340 - $x )
+  }
+}

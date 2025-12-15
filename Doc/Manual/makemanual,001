@@ -1,0 +1,837 @@
+#!<perl$dir>.perl
+
+use Filespec;
+
+use Filehandle;
+
+if ($ARGV[0] eq '-ddf')  { $output_type='ddf';  shift @ARGV; }
+if ($ARGV[0] eq '-text') { $output_type='text'; shift @ARGV; }
+
+# This script converts lightly marked-up text to
+#   Impression DDF
+#   plain text
+#   TeX
+# ... at least, it will when it's finished. For now, it manages
+# DDF and plain text quite well. Apart, that is, from the fact
+# that the code is a total mess, and probably full of bugs :-).
+#
+# Its application is limited: it is supposed to handle software manuals.
+# More general things than that are surely possible, of course.
+#
+# The input file format is basically plain text, with the following
+# bits of magic.
+#
+#   - Headings.
+#
+#     If a special heading command appears at the start of a line,
+#     then that line (along with any immediately following lines
+#     beginning with the same heading command) is made into a heading.
+#     (If multiple lines appear, they are concatenated with single
+#     spaces in between.)
+#
+#     A heading command consists of an @ followed by a digit and
+#     optional whitespace. It must appear at the very start of the line.
+#     The mapping from digits to header styles is defined by the
+#     @headerstyles array below.
+#
+#   - Typefaces etc.
+#
+#     @.{foo} produces `foo' in a code style. @i{foo} produces it
+#     in italics. @b{foo} produces it in boldface. @r{foo} inside
+#     a code block or similar produces the normal document font.
+#
+#   - Indentation, lists etc.
+#
+#     @| at the start of a bunch of consecutive lines results in
+#     the lines having an `indent' style applied to them. @|| results
+#     in more indentation.
+#
+#     @l{1.} at line start produces paragraphs with a hanging indent.
+#     If the label is {.} it is replaced by a suitably munged bullet.
+#     Empty labels are allowed.
+#
+#     Between @l and {...} you can insert an extra `l' (meaning
+#     more indentation), and/or an extra `w' (meaning to cope
+#     with a wider label. (These features may not work right yet.)
+#     (They don't. They did, and then I broke them. Specifically,
+#     (1) The L/W thing is bogus; I should just have different
+#     amounts of indentation. (2) The text version should do what
+#     the Impression version does, and *right*-justify the labels.
+#
+#     @! at the start of a bunch of consecutive lines should be used
+#     for substantial code samples. This is special in that line
+#     breaks are honoured, as are initial spaces after the @!.
+#
+#     If a load of @! is preceded by a line @f{name} then a copy of
+#     that paragraph will be saved in a file called `name', but only
+#     in text mode.
+#
+#     @+ honours line breaks and decreases inter-line spacing, but
+#     otherwise doesn't mess with the formatting.
+#
+#   - Sections and indexing.
+#
+#     A line beginning @: followed by one of `part', `chapter',
+#     `section', `subsection' increments the current <whatever> number
+#     and resets the later ones. It has no other effect. You can
+#     say @:section=A or similar if you like, for the first one;
+#     options are 0 (number from 0), 1 (number from 1), A (ABC...),
+#     a (abc...), i (i ii iii...), I (I II III...).
+#
+#     The sequence @={chapter} (or whatever) inserts the current
+#     chapter number.
+#
+#     @^{foo} is the same as foo, but puts `foo' in the index. @^^{foo}
+#     on a line of its own puts foo in the index without inserting anything
+#     in the text. Index entries are done by section (or whatever).
+#
+#  - Line breaks, vertical space etc.
+#
+#    The end-of-paragraph marker is two consecutive newlines.
+#    Further newlines after that are ignored.
+#    @/ on a line of its own inserts an extra newline.
+#
+#  - Arbitrary characters.
+#
+#    Just insert them as they are. @@ is an at sign, of course.
+#    Also, @\{100} inserts character 100, etc.
+#
+#  - Comments.
+#
+#    @c at the start of a line means that the rest of the line is ignored.
+#
+#  - Variables.
+#
+#    @s{var=value} sets a variable called `var' to `value'.
+#    @v{var} inserts its value.
+#
+#  - Other features.
+#
+#    @,{n} inserts a horizontal kern by n hundredths of an em.
+#    @; == @,{10}.
+#    @d{blah} inserts {blah} into the DDF file.
+#    @o{type:blah} inserts blah into the output if it's of type type.
+#    It can't contain any braces, alas.
+#    @t inserts a tab into the output file.
+#
+# BUG: null characters in the input file cause chaos.
+# BUG: roman numerals aren't supported yet.
+
+sub lose {
+  my $complaint=shift;
+  print STDERR $complaint," <line $.>\n";
+  die;
+}
+
+# $_begins with an open-brace. Return everything up to (but not including)
+# matching close-brace, and leave $_ containing everything after it.
+sub braced_group {
+  my $left='';
+  my $count=1;
+  lose('no open-brace') unless substr($_,0,1) eq '{';
+  $_=substr($_,1);
+  while (/^([^{}]*)(.)(.*)$/) {
+    lose('unterminated group<1>') unless $2;
+    if ($2 eq '{') { ++$count; }
+    elsif ($2 eq '}') { --$count; }
+    else { lose('unbalanced stuff'); }
+    if ($count==0) { $left .= $1; $_=$3; last; }
+    else { $left .= $1.$2; $_=$3; }
+  }
+  lose('unterminated group<2>') if $count;
+  return $left;
+}
+
+# Three arguments. The first two determine the paragraph type. The
+# third is what to append to the (possibly new) paragraph.
+sub update {
+  my ($type,$param,$text) = @_;
+  $onewlist=$newlistp;
+  if ((substr($type,0,4) eq 'list' and $param ne '__ditto')
+      or substr($type,0,4) ne 'list'
+         and ($type ne $lasttype or $param ne $lastparam)) {
+    flush_paragraph();
+    $newlistp=''; $oldlistp='';
+    if ($type ne $lasttype) {
+      $newlistp = $type if substr($type,0,4) eq 'list';
+      $oldlistp = $lasttype if substr($lasttype,0,4) eq 'list';
+    }
+    $lasttype=$type; $lastparam=$param; $lasttext=$text;
+  }
+  else { $lasttext .= ' ' . $text; }
+}
+
+# Process embedded commands in a string.
+sub expand_commands {
+  my $old_=$_;
+  $_=shift;
+if ($debugging) {
+print STDERR "expand_commands: <<<$_>>>\n";
+}
+  while (/^(.*)\@(.)\{([^{}]*)\}(.*)$/s) {
+    $pre=$1; $cmd=$2; $arg=$3; $post=$4;
+    $_=$pre.expand_braced_command($cmd,$arg).$post;
+  }
+  while (/^(.*)\@(.)(.*)$/s) {
+    $pre=$1; $cmd=$2; $post=$3;
+    $_=$pre.expand_unbraced_command($cmd).$post;
+  }
+  if ($output_type eq 'ddf') {
+    # Deal with things forbidden in DDF. Not that there are many.
+    s/\{/\{\\123\}/sg;
+    # Splice in expanded braced commands.
+    while (/\0\#([^\0]*)\0/s) {
+      $stuff=$1;
+      s/\0\#[^\0]*\0/{$stuff}/s;
+    }
+  }
+  if ($output_type eq 'text') {
+    while (/\0\#([^\0]*)\0/s) {
+      $stuff=$1;
+      $stuff = '@' if $stuff eq 'at';
+      $stuff = chr($stuff) if $stuff =~ /^\d+$/;
+      s/\0\#[^\0]*\0/$stuff/s;
+    }
+  }
+  s/\0//sg;
+  ($_,$old_)=($old_,$_);
+if ($debugging) {
+print STDERR "expand_commands: [[[$old_]]]\n";
+}
+  return $old_;
+}
+
+# Strip embedded commands in a string.
+sub strip_commands {
+  my $old_=$_;
+  $_=shift;
+  while (/^(.*)\@(.)\{([^{}]*)\}(.*)$/s) {
+    $pre=$1; $cmd=$2; $arg=$3; $post=$4;
+    $_=$pre.$arg.$post;
+  }
+  while (/^(.*)\@(.)(.*)$/s) {
+    $pre=$1; $cmd=$2; $post=$3;
+    $_=$pre.$post;
+  }
+  s/\0[^\0]*\0//sg;
+  ($_,$old_)=($old_,$_);
+  return $old_;
+}
+
+sub flush_paragraph {
+  return if $lasttext =~ /^\s$/s and $lasttype ne 'newline';
+  if ($output_type eq 'text') { flush_paragraph_text(); }
+  elsif ($output_type eq 'ddf') { flush_paragraph_ddf(); }
+}
+
+# Output a single paragraph.
+# $lasttext contains its text, $lasttype/$lastparam its type.
+# The text may still contain in-line control sequences.
+sub flush_paragraph_ddf {
+#print STDERR '.';
+  $_=expand_commands($lasttext);
+  $pre=''; $post='';
+  $code=0; $verbatim=0;
+  # Choose style according to type/param.
+  if ($lasttype eq 'header') {
+    push @headings, [$lastparam, $_] unless $lastparam==0;
+    ++$lastparam if $lastparam==0;
+    $typename=$headerstyles[$lastparam];
+    $pre="{\"$typename\" on}";
+    $post="{\"$typename\" off}";
+  }
+  elsif ($lasttype eq 'indent') {
+    $typename="Indent $lastparam";
+    $pre="{\"$typename\" on}";
+    $post="{\"$typename\" off}";
+  }
+  elsif (substr($lasttype,0,4) eq 'list') {
+    $lastparam='@d{"Bullet" on}è@d{"Bullet" off}' if $lastparam eq '.';
+    $l_style = 'List'.substr($lasttype,4,2);
+    $l_style = '"'.$l_style.'"';
+    $foo = $onewlist ? "{$l_style on}".'{"3pt above" on}{kern 0 0}{"3pt above" off}'
+                     : '';
+    $pre=$foo.'{tab}'.expand_commands($lastparam).'{tab}';
+    $post='';
+  }
+  elsif ($lasttype eq 'code') {
+    $lastparam='' if $lastparam==0;
+    $style = '"Code'.$lastparam.' block"';
+    $pre="{$style on}".'{"3pt above" on}{kern 0 0}{"3pt above" off}';
+    $post="{$style off}";
+    s/\n /\n/mg;
+    chomp; # hmm.
+    $code=1;
+  }
+  elsif ($lasttype eq 'verbatim') {
+    $pre='{"0pt below" on}{kern 0 0}{"0pt above" on}';
+    $post='{"0pt below" off}{kern 0 0}{"0pt above" off}';
+    s/\n /\n/mg;
+    $verbatim=1;
+    chomp; # hmm.
+  }
+  elsif ($lasttype eq 'newline') {
+    if ($oldlistp) {
+      $l_style = '"List'.substr($oldlistp,4).'"';
+      print "{$l_style off}";
+    }
+    return; # ?
+  }
+  else {
+    # don't actually do anything, but some day it might be good to
+    # check $lasttype isn't something crazy.
+  }
+  s/\s+/ /g unless ($code or $verbatim);
+  if ($oldlistp) {
+    $l_style = 'List'.substr($oldlistp,4);
+    $pre="{$l_style off}" . $pre;
+  }
+
+#print STDERR "\npre:\n$pre\nmain:\n$_\npost:\n$post\n";
+
+  # Actually output the paragraph.
+  do_print($pre.$_."\n".$post);
+}
+
+sub do_header_text {
+  my ($text, $depth) = @_;
+  my $offset=4;
+  $depth = $depth+0;
+
+print STDERR "header $depth: $text\n" if $debugging;
+
+  print "\n" if $depth==1;
+  print "\n" if $depth<=2;
+  $offset = (72-length($text))/2 if $depth==1;
+  $offset = 0 if $depth>1 and $depth<=3;
+  print ' ' x $offset;
+  print $text,"\n";
+  if ($depth<=2) {
+    print ' ' x $offset;
+    print '=' x length($text) if $depth==1;
+    print '-' x length($text) if $depth==2;
+    print "\n";
+  }
+  print "\n";
+  $last_was_blank=1;
+}
+
+sub flush_paragraph_text {
+  my $indentstr = '';
+  my $width = 64;
+  my $bullet = '';
+  my $concatp = 1;
+  $_ = expand_commands($lasttext);
+  
+print STDERR "fpt: lt=$lasttype str=<<<$_>>>\n" if $debugging;
+
+  if ($lasttype eq 'header') {
+    push @headings, [$lastparam, $_];
+    do_header_text($_, $lastparam);
+    return;
+  }
+  elsif ($lasttype eq 'indent') {
+    $indentstr = '    ' x $lastparam;
+    $width -= 4*$lastparam;
+  }
+  elsif (substr($lasttype,0,4) eq 'list') {
+    $lastparam = '<>' if $lastparam eq '.';
+    $bullet = expand_commands($lastparam);
+    $i0 = (substr($lasttype,4,1)) eq 'L' ? 8 : 4;  # spaces before bullet
+    $i1 = (substr($lasttype,5,1)) eq 'W' ? 8 : 4;  # space for bullet
+    $i2 = 4*int((length($bullet)+4)/4);            # min space for bullet
+    $i1 = $i2 if $i1<$i2;                          # now $i1 is right
+    $indentstr = ' ' x ($i0+$i1);
+    $bullet    = ' ' x $i0 . $bullet . ' ' x ($i1 - length($bullet));
+    $width -= ($i0+$i1);
+  }
+  elsif ($lasttype eq 'code') {
+    $indentstr = '  | ';
+    $width -= 4;
+    $indentstr = '    'x$lastparam . $indentstr;
+    $width -= 4*$lastparam;
+    $concatp=0;
+    s/\n /\n/mg;
+    if ($filename ne '') {
+      print STDERR "[$filename]";
+      open ZOG, '>'.$filename or die "! Couldn't open example save file.\n";
+      print ZOG;
+      close ZOG;
+      $filename='';
+    }
+  }
+  elsif ($lasttype eq 'verbatim') {
+    $concatp=0;
+    s/\n /\n/mg;
+  }
+  elsif ($lasttype eq 'newline') {
+    print "\n" unless $last_was_blank;
+    $last_was_blank=1;
+    return;
+  }
+  else {
+    # don't actually do anything, but some day it might be good to
+    # check $lasttype isn't something crazy.  
+  }
+  s/\s+/ /g if $concatp;
+  # Now we need to format our output. Each line is preceded
+  # by $indentstr, except that the first has it replaced by
+  # $bullet if that is non-empty. Each line is in fact preceded
+  # by four more spaces. After all the lines have been output,
+  # we output a blank line.
+  my $firstp = 1;
+  for $line (split /\n/) {
+    print '    ',$indentstr if $line eq '';
+    while ($line ne '') {
+      $len = length($line);
+      print '    ';
+      print (($firstp && ($bullet ne '')) ? $bullet : $indentstr);
+      while (/^([^\t]*)\t(.*)$/) {
+        last if length($1)>=$width;
+        $_ = $1 . ' 'x(4-(length($1)&3)) . $2;
+      }
+      if ($len<=$width) { print $line; $line=''; }
+      else {
+        # Split at the last whitespace char before the end.
+        $pos = rindex $line, ' ', $width;
+        $pos = $width if $pos<0;
+        print substr($line, 0, $pos);
+        if (substr($line,$pos,1) eq ' ') { ++$pos; }
+        else { print '-'; }
+        $line = substr($line, $pos);
+        print "\n";
+      }
+      $firstp=0;
+    }
+    print "\n";
+  }
+  $last_was_blank = 0;
+}
+
+sub expand_braced_command {
+  my ($cmd,$arg) = @_;
+  if ($debugging) {
+    print STDERR "ebc: cmd=$cmd arg=$arg\n";
+  }
+  if ($output_type eq 'ddf') {
+    return expand_braced_command_ddf($cmd,$arg); }
+  elsif ($output_type eq 'text') {
+    return expand_braced_command_text($cmd,$arg);
+  }
+}
+
+# Do the right thing with a command.
+sub expand_braced_command_ddf {
+  my ($cmd,$arg) = @_;
+  if ($cmd eq 'i') { return "\0#italic on\0$arg\0#italic off\0"; }
+  elsif ($cmd eq '.') { return "\0#\"Code\" on\0$arg\0#\"Code\" off\0"; }
+  elsif ($cmd eq 'b') { return "\0#bold on\0$arg\0#bold off\0"; }
+  elsif ($cmd eq '^') { add_to_index($arg); return $arg; }
+  elsif ($cmd eq ',') { return "\0#kern ".10*$arg." 0\0"; }
+  elsif ($cmd eq 'd') { return "\0#$arg\0"; }
+  elsif ($cmd eq 'r') { return "\0#\"NormFont\" on\0$arg\0#\"NormFont\" off\0";}
+  elsif ($cmd eq '=') { return $section[$sectionlevels{$arg}]; }
+  elsif ($cmd eq '\\') { return "\0#\\$arg\0"; }
+  else { return expand_braced_command_any($cmd,$arg); }
+}
+
+sub expand_braced_command_text {
+  my ($cmd,$arg) = @_;
+  if ($cmd eq 'i') { return "\0/\0$arg\0/\0"; }
+  elsif ($cmd eq '.') { return "\0|\0$arg\0|\0"; }
+  elsif ($cmd eq 'b') { return "\0*\0$arg\0*\0"; }
+  elsif ($cmd eq '^') { add_to_index($arg); return $arg; }
+  elsif ($cmd eq ',') { return ""; }
+  elsif ($cmd eq 'd') { return ""; }
+  elsif ($cmd eq 'r') { return $arg; }
+  elsif ($cmd eq '=') { return $section[$sectionlevels{$arg}]; }
+  elsif ($cmd eq '\\') { return "\0#$arg\0"; }
+  else { return expand_braced_command_any($cmd,$arg); }
+}
+
+sub expand_braced_command_any {
+  my ($cmd,$arg) = @_;
+  if ($cmd eq 'o') {
+    $arg =~ /^([^:]*):(.*)$/;
+    return $2 if $1 eq $output_type;
+  }
+  elsif ($cmd eq 's') {
+    $arg =~ /^([^=]*)=(.*)$/;
+    $vars{$1} = $2;
+    return '';
+  }
+  elsif ($cmd eq 'v') {
+    return $vars{$arg};
+  }
+  else { lose("unknown {command}: $cmd, $arg"); }
+}
+
+sub expand_unbraced_command {
+  my $cmd = shift;
+    print STDERR "euc: cmd=$cmd\n" if $debugging;
+  if ($output_type eq 'ddf') {
+    return expand_unbraced_command_ddf($cmd); }
+  elsif ($output_type eq 'text') {
+    return expand_unbraced_command_text($cmd);
+  }
+}
+
+sub expand_unbraced_command_ddf {
+  my $cmd = shift;
+  if ($cmd eq '@') { return "\0#at\0"; } # shouldn't ever happen now
+  elsif ($cmd eq 't') { return "\0#tab\0"; }
+  elsif ($cmd eq ';') { return "\0#kern 100 0\0"; }
+  else { lose("unknown command: $cmd"); }
+}
+
+sub expand_unbraced_command_text {
+  my $cmd = shift;
+  if ($cmd eq '@') { return "@"; } # shouldn't ever happen now
+  elsif ($cmd eq 't') { return "\t"; }
+  elsif ($cmd eq ';') { return ""; }
+  else { lose("unknown command: $cmd"); }
+}
+
+# Add something to the index.
+sub add_to_index {
+  my $text=shift;
+  if (defined($index{$text}))
+    { $index{$text} .= ':' . join('.',@section); }
+  else
+    { $index{$text} = join('.',@section); }
+}
+
+sub char1 {
+  my $t = shift;
+  my $u = uc(substr($t,0,1));
+  return $u if $u =~ tr/A-Z/A-Z/;
+  $u = uc(substr($t,1,1));
+  return $u if $u =~ tr/A-Z/A-Z/;
+  return ' ';
+}
+
+# Write the index.
+sub output_index {
+  my $last=' ';
+  my $first;
+  my ($value,@values);
+  my @keys = sort map { char1(strip_commands($_)).$_ } keys(%index);
+  update('header', 0, 'Index');
+  update('newline', 0, '');
+  print "{\"Index entry\" on}\n" if $output_type eq 'ddf';
+  for $key (@keys) {
+    $first=substr($key,0,1);
+    $key=substr($key,1);
+    if ($output_type eq 'ddf') {
+      print '{"IndexLetter" on}'.$first.'{"IndexLetter" off}'
+        if $first ne $last;
+    }
+    elsif ($output_type eq 'text') {
+      $t = $last_was_blank ? "" : "\n";
+      print (($first ne $last) ? "$t    [$first] " : "        ");
+      $last_was_blank = 0;
+    }
+    $last=$first;
+    print '{tab}'.expand_commands($key).'{tab}' if $output_type eq 'ddf';
+    if ($output_type eq 'text') {
+      $x = expand_commands($key);
+      print $x, ' ', ' 'x(23-length($x));
+    }
+    @values=split(/:/,$index{$key});
+    $first=1; # pun
+    for $value (@values) {
+      print ', ' unless $first;
+      $first=0;
+      $value =~ s/^\.*//; $value =~ s/\.*$//;
+      print $value;
+    }
+    print "\n";
+  }
+  print "{\"Index entry\" off}\n" if $output_type eq 'ddf';
+}
+
+sub output_contents {
+  update('header', 0, 'Contents');
+  update('newline', 0, '');
+  for $line (@headings) {
+    ($level, $text) = @$line;
+print STDERR $level,': ',$text,"\n" if $debugging;
+    if ($output_type eq 'text') {
+      print "\n" if $level<=2 and !$last_was_blank;
+      print '    ' x $level;
+      print $text,"\n";
+    }
+    if ($output_type eq 'ddf') {
+      $style = '"Contents'.($level-1).'"';
+      print "\{$style on\}$text\n\{$style off\}";
+    }
+    $last_was_blank = 0;
+  }
+  print "\n";
+  $last_was_blank = 1;
+}
+
+sub tidy_up {
+  print "{\"ManualBase\" off}\n" if $output_type eq 'ddf';
+}
+
+# I don't think this actually needs to do anything special,
+# but it's here in case it does.
+sub do_print {
+  my $text=shift;
+  print $text;
+}
+
+sub reset_section {
+  my $n=shift;
+  my $s=$section[$n];
+  if (!defined($s)) {
+    if ($s =~ /[A-Z]/) { $section[$n]='A'; }
+    elsif ($s =~ /[a-z]/) { $section[$n]='a'; }
+    else { $section[$n]=0; }
+  }
+}
+
+%vars=();
+
+$preamble = <<EOP;
+{
+define style "ManualBase";
+ font Goudy.Oldstyle.Medium; fontsize 10pt; fontaspect 100%;
+ fontcolour rgb=(0,0,0); linecolour rgb=(0,0,0); rulecolour rgb=(0,0,0);
+ linespacep 120%;
+ spaceabove 3pt; spacebelow 3pt;
+ leftmargin 1cm; returnmargin 1cm; rightmargin -0cm;
+ condframethrow 15pt;
+ justify full;
+ underline 0; strikeout off; script off; hyphenate off; leader "";
+ locktolinespace off;
+ italic off; bold off;
+ ruleaboveoffset 0pt; rulecontrol 0; vertrulewidth 1pt;
+ ruleleftmargin 0pt; rulerightmargin 0pt; rulewidth 0pt; ruleoffset 0pt;
+ tracking 0; overprintb off; overprint off;
+ dectabchar ".";
+ keepparagraph off; keepnext off; keepregion off;
+ shortcut 2;
+ tabs 2cm,3cm,4cm,5cm,6cm,7cm,8cm;
+ menuitem off
+}{define style "Chapter heading";
+ fontsize 24pt; bold on;
+ spaceabove 30pt; spacebelow 15pt;
+ leftmargin 0pt; returnmargin 0pt; justify left;
+ condframethrow 30pt; keepnext on;
+ ruleoffset -3pt; rulewidth 1.5pt;
+ rulecontrol 4;
+ contents 1;
+ autoparagraph;
+ shortcut 385;
+ menuitem on
+}{define style "Section heading";
+ fontsize 20pt; bold on;
+ spaceabove 30pt; spacebelow 15pt;
+ leftmargin 0cm; returnmargin 0cm; justify left;
+ condframethrow 30pt; keepnext on;
+ contents 1;
+ autoparagraph;
+ shortcut 385;
+ menuitem on
+}{define style "Subsection heading";
+ fontsize 13pt; italic on;
+ leftmargin 0cm; returnmargin 0cm; justify left;
+ spaceabove 20pt; spacebelow 10pt;
+ leftmargin 0pt; justify left;
+ condframethrow 25pt; keepnext on;
+ contents 2;
+ autoparagraph;
+ shortcut 386;
+ menuitem on
+}{define style "Minor heading";
+ bold on;
+ spaceabove 10pt; spacebelow 6pt;
+ justify left;
+ autoparagraph;
+ menuitem on
+}{define style "Code";
+ font Corpus.Medium; fontaspect 80%;
+ linespace 12pt; locktolinespace off;
+ shortcut 913;
+ menuitem on
+}{define style "Code block";
+ font Corpus.Medium; fontaspect 80%;
+ spaceabove 0pt; spacebelow 0pt;
+ leftmargin 2cm; returnmargin 2cm; justify left;
+ shortcut 914;
+ menuitem on
+}{define style "Code1 block";
+ font Corpus.Medium; fontaspect 80%;
+ spaceabove 0pt; spacebelow 0pt;
+ leftmargin 3cm; returnmargin 3cm; justify left;
+ menuitem on
+}{define style "Code2 block";
+ font Corpus.Medium; fontaspect 80%;
+ spaceabove 0pt; spacebelow 0pt;
+ leftmargin 4cm; returnmargin 4cm; justify left;
+ menuitem on
+}{define style "NormFont";
+ font Goudy.Oldstyle.Medium; fontaspect 100%;
+ italic off; bold off;
+ menuitem on
+}{define style "Indent 1";
+ leftmargin 2cm; returnmargin 2cm;
+ menuitem on
+}{define style "Indent 2";
+ leftmargin 3cm; returnmargin 3cm;
+ menuitem on
+}{define style "Indent 3";
+ leftmargin 4cm; returnmargin 4cm;
+ menuitem on
+}{define style "List";
+ leftmargin 2cm; returnmargin 1cm; rightmargin -1cm;
+ tabs right 1.8cm,2cm,3cm,4cm,5cm,6cm,7cm,8cm;
+ spaceabove 0pt;
+}{define style "ListW";
+ leftmargin 3cm; returnmargin 1cm; rightmargin -1cm;
+ tabs right 2.8cm,3cm,4cm,5cm,6cm,7cm,8cm;
+ spaceabove 0pt;
+}{define style "ListL";
+ leftmargin 3cm; returnmargin 2cm; rightmargin -1cm;
+ tabs right 2.8cm,3cm,4cm,5cm,6cm,7cm,8cm;
+ spaceabove 0pt;
+}{define style "ListLW";
+ leftmargin 4cm; returnmargin 2cm; rightmargin -1cm;
+ tabs right 3.8cm,4cm,5cm,6cm,7cm,8cm;
+ spaceabove 0pt;
+}{define style "Index entry";
+ leftmargin 5cm; returnmargin 0cm;
+ spaceabove 0pt; spacebelow 0pt;
+ tabs 1cm,5cm;
+ menuitem off
+}{define style "IndexLetter";
+ bold on; linespacep 0%; fontsize 16pt;
+ spaceabove 6pt;
+ leftmargin 0cm;
+ menuitem off
+}{define style "0pt above";
+ spaceabove 0pt
+}{define style "3pt above";
+ spaceabove 3pt
+}{define style "0pt below";
+ spacebelow 0pt
+}{define style "3pt below";
+ spacebelow 3pt
+}{define style "Bullet";
+ fontsize 13pt;
+ linespace 12pt
+}{"ManualBase" on}
+EOP
+
+@headerstyles = (
+  "There isn't a style 0",
+  "Chapter heading",
+  "Section heading",
+  "Subsection heading",
+  "Minor heading"
+);
+
+@sectiontypes = ("part","chapter","section","subsection");
+%sectionlevels=();
+@section=('','','','');
+for $i (0..$#sectiontypes) { $sectionlevels{$sectiontypes[$i]}=$i; }
+# for $i (0..$#sectiontypes) { $section[$i]=undef; }
+
+$lasttype=''; $lastparam=''; $lasttext=''; $newlistp=0;
+
+print $preamble if $output_type eq 'ddf';
+
+$debugging=0;
+$filename='';
+
+@headings = ();
+
+line: while (<>) {
+  chomp;
+$debugging=1,next if $_ eq 'DEBUG ON';
+$debugging=0,next if $_ eq 'DEBUG OFF';
+  # deal *now* with @@, else get confused
+  s/\@\@/\0#at\0/g;
+  if (substr($_,0,1) eq '@') {
+    # start-of-line command
+    $cmd=substr($_,1,1); $_=substr($_,2);
+    # Is it a heading?
+    if ($cmd =~ /[0-9]/) {
+      s/^\s+//;
+      update('header',$cmd,$_);
+#print STDERR "\n" if $lastparam <= 2;
+print STDERR $lastparam;
+      next line;
+    }
+    # No, not a heading. Is it indentation?
+    elsif ($cmd eq '|') {
+      $depth=1;
+      while (substr($_,0,1) eq '|') { ++$depth; $_=substr($_,1); }
+      if (substr($_,0,1) eq '!') {
+        update('code', $depth, substr($_,1));
+      }
+      else {
+        s/^\s+//;
+        update('indent',$depth,$_);
+      }
+      next line;
+    }
+    # No, not indentation. Code?
+    elsif ($cmd eq '!') {
+      update('code',0,$_."\n"); # hack
+      next line;
+    }
+    # No, not code. Verbatim non-code?
+    elsif ($cmd eq '+') {
+      update('verbatim',0,$_."\n"); # same hack
+      next line;
+    }
+    # No, not code. List?
+    elsif ($cmd eq 'l') {
+      $l_extra=''; $l_wide='';
+      if ((substr($_,0,1)) eq 'l') { $l_extra='L'; $_=substr($_,1); }
+      if ((substr($_,0,1)) eq 'w') { $l_wide='W'; $_=substr($_,1); }
+      $gp=braced_group();
+      update('list'.$l_extra.$l_wide,$gp,$_);
+      next line;
+    }
+    # No, not list. Section thingy?
+    elsif ($cmd eq ':') {
+      /^\s*([^=\s]+)(.*)$/ or lose('no section type after @:');
+      $n=$sectionlevels{$1};
+      lose("unknown section type: $1") unless $n;
+      if ($2 =~ /\s*=\s*(.*)$/) { $section[$n]=$1; }
+      else { ++$section[$n]; }
+      for $i ($n+1..3) { reset_section($i); }
+      next line;
+    }
+    # No, not section. Invisible index entry?
+    elsif ($cmd eq '^' && substr($_,0,1) eq '^') {
+      $_=substr($_,1);
+      $gp=braced_group();
+      add_to_index($gp);
+      next line;
+    }
+    # Filename?
+    elsif ($cmd eq 'f') { $filename=braced_group(); next line; }
+    # Comment?
+    elsif ($cmd eq 'c') { next line; }
+    # Newline?
+    elsif ($cmd eq '/') {
+      update('newline',0,'');
+    }
+    # OK, not a special line-start command. Put it back.
+    $_='@'.$cmd.$_;
+  }
+  # Either not a line-start command, or fallen through on purpose.
+  if (/^\s*$/) { update('newline',0,''); }
+  elsif (substr($lasttype,0,4) eq 'list') { update($lasttype,'__ditto',$_); }
+  else { update('normal',0,$_); }
+}
+# Finally:
+update('finished',0,'');
+output_contents();
+output_index();
+tidy_up();

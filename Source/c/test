@@ -1,0 +1,22 @@
+/* Test harness for the mouth of mkdrawf3
+ * Make sure mouth.c was compiled with -DDEBUG
+ */
+
+#include <stdio.h>
+
+#include "mkdrawf.h"
+
+char *name();
+
+int font_number(const char *s) {
+  return 123;
+}
+
+int main(void) {
+  init_global_hash();
+  input_file_name="stdin";
+  input_file=stdin;
+  while (1) {
+    if (get_x_token(0)) break;
+  }
+}

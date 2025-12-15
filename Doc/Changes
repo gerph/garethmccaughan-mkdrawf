@@ -1,0 +1,109 @@
+version 2.20  8/4/1995  530k unarchived
+new features: include, sprites from files
+improvements: more graceful error handling, slightly cleaner code,
+              manual updated
+
+version 2.22 10/4/1995  495k unarchived  one more file
+new features: tagfiles, append, gstrans
+improvements: bboxes calculated properly, Triangle/Triangular problem fixed,
+              code even cleaner
+
+version 2.23 11/4/1995  494k unarchived  36 files
+new features: decdrawf -s and -v, BoundingBox in more places
+improvements: big bounding box bug blasted
+
+version 2.24 11/4/1995  498k unarchived  36 files
+new features: decdrawf -S
+dishonesty: actually 12/4/1995
+
+version 2.30 13/4/1995  508k unarchived  36 files
+new features: decdrawf -S removed(!), lots of bug fixes
+
+version 2.31 21/4/1995  550k unarchived  38 files (&13 dirs)
+new features: Font keyword, mkdrawf -t, Str2Num,Num2Str, [H]CentreIn,
+              implicit font tables, manual has index
+
+version 2.32 21/4/1995  550k unarchived
+new features: OM hot spot text hack
+improvements: bugfix: token-list macro args now OK. Slightly better error
+              handling in presence of unmatched braces.
+
+version 2.33 21/4/1995  553k unarchived  39f 13d
+new features: colours as triples of numbers
+improvements: a couple of trivial bugs; manual improved a bit
+
+version 2.34 25/4/1995  574k unarchived  39f 13d
+new features: JPEG decoding in decdrawf (as standard), encoding in mkdrawf
+              (with -DJPEG); random numbers
+improvements: trivial bugfix to nasty OM hack; minor code cleanups
+
+version 2.35 30/4/1995  760k unarchived  55f 18d
+new features: -DJPEG no longer needed; !drawf included; tutorial and
+              !drawf manual; -e options for mkdrawf and decdrawf;
+              more example files
+improvements: JPEG decoding no longer defaults to separate file;
+              bugfix to path style code
+
+version 3.00 11/5/1995  793k unarchived  59f 18d
+new features: none
+improvements: code reorganised; macro-expansion internals completely
+              rewritten. Consequences: about 10% faster; much less
+              memory-hungry; various restrictions weakened; serious
+              bug with nested macros fixed.
+
+version 3.01 15/5/1995  796k unarchived  60f 18d
+new features: none
+improvements: bug with positional parameters fixed.
+
+version 3.02 5/6/1995   801k unarchived  61f 18d
+new features: none
+improvements: various cleanups; uses DDE for long command lines properly.
+
+version 3.03 6/7/1995   801k unarchived  61f 18d
+new features: none
+improvements: Kerned and RightToLeft keywords put into XfText. Oops!
+
+version 3.04 4/10/1995  801k unarchived 61f 18d
+new features: none
+improvements: Bug fix from Alun Jones: deal correctly with dashed paths.
+
+version 3.05 5/12/1995  803k unarchived 61f 18d
+new features: CentreAt, HCentreOn
+improvements: Text-area bbox bug fixed.
+
+version 3.06 2/1/1996  805k unarchived 62f 18d
+new features: none
+improvements: bug fix to new 3.05 features; explained what "Floor" does;
+              !Drawf templates made system-font-sympathetic;
+              trivial code changes to provoke fewer compiler warnings;
+              include helpful note about making mkdrawf faster.
+
+version 3.07 4/12/1996  827k unarchived 64f 18d
+new features: Units, Unit, predefined unit variables; units for decdrawf.
+improvements: trifling changes to manual and Makefile.
+
+version 3.08 5/1/1997	834k unarchived 65f 18d
+new features: text bbox variables and virtual [xf]text objects.
+improvements: many, many bugs in !Drawf's DDE code removed (I'd obviously
+              never even tried to use it); !Sprites22 for !Drawf added,
+              courtesy of someone whose name I've forgotten; more sensible
+              defaulting of parameters for Text and XfText objects.
+
+version 3.09 29/4/1997  850k unarchived 65f 18d
+new features: Arcsin, Arccos, Arctan, Arctan2.
+improvements: Num2Str uses Latin-1 minus sign instead of hyphen;
+              make |save_file| report failure correctly;
+              !drawf uses Wimp sprite for icon;
+              adjust-clicking on Units arrows does the right thing;
+              HCentre{In,On} does something with XfText.
+
+version 3.10 13/9/1998 1281k unarchived 87f 22d
+new features: symbolic colour names; IfExistsHere;
+              macros with named positional parameters;
+              Arc keyword in paths; expanded text in text areas;
+              new For loops; hex option in decdrawf;
+              ToThe, Ceiling, Abs, Sign.
+improvements: remove horrible macro-parameter scoping bug;
+              remove limitation on number of columns in a text area;
+              fix matrix translation bugs; nicer handling of JPEG objects;
+              complete reformatting of manual.

@@ -1,0 +1,32 @@
+# Snowflake curve
+( $r3/2 := ( sqrt 3 ) / 2 )
+# Side [ x0 y0 x1 y1 n ]
+# this should be inserted into a Path
+# The assumption is that we‘re
+# already "at" (x0,y0).
+define Side [ %x0 %y0 %x1 %y1 %n ] {
+  IfLess %n 1
+    Line %x1 %y1
+  Else ( (
+    %dx := ( %x1 - %x0 ) / 3   %dy := ( %y1 - %y0 ) / 3
+    %xa := %x0 + %dx           %ya := %y0 + %dy
+    %xb := %x1 - %dx           %yb := %y1 - %dy
+    %xh := ( %x0 + %x1 ) / 2   %yh := ( %y0 + %y1 ) / 2
+    %xt := %xh + $r3/2 * %dy   %yt := %yh - $r3/2 * %dx
+    %m  := %n - 1
+    Side [ %x0 %y0  %xa %ya  %m ]
+    Side [ %xa %ya  %xt %yt  %m ]
+    Side [ %xt %yt  %xb %yb  %m ]
+    Side [ %xb %yb  %x1 %y1  %m ]
+  ) ) EndIf
+}
+( ( $x0 := 100  $y0 := 100
+    $x1 := 400  $y1 := 100
+    $x2 := 250  $y2 := 100 + 300 * $r3/2 ) )
+Path {
+  Move $x0 $y0
+  Side [ $x0 $y0  $x1 $y1  5 ]
+  Side [ $x1 $y1  $x2 $y2  5 ]
+  Side [ $x2 $y2  $x0 $y0  5 ]
+  Close      # not really needed unless you want to fill it
+}

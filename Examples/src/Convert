@@ -1,0 +1,15 @@
+# conversion operators
+
+Text {
+  StartAt 100 100
+  Size 20 20
+  Style Font "Trinity.Medium.Italic"
+  Text Append 3 Num2Str 12345.6789 " wombat " Num2Str -1
+}
+
+Path {
+  Width 2
+  OutlineColour r200g0b0
+  Move Str2Num "100" Str2Num "0x64"
+  Line Str2Num "000200.00" Str2Num "2e2"
+}

@@ -1,0 +1,599 @@
+/* Decode a drawfile into a format mkdrawf (new version) will understand */
+
+/* System dependencies:
+ *  - I think it assumes 32 bits, LSB first.
+ *  - the "lowfile" routines used are RISC OS specific; but you could
+ *    substitute |open()| etc on Unix boxes.
+ */
+
+/* #define ONLINE_MEDIA for a few trivial changes:
+ *  - include bbox for text item
+ *  - nothing more, so far
+ */
+
+#define VERSION_STRING "3.10 (13/9/1998)"
+
+#include <ctype.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "lowfile.h"
+
+static int short_errors=0;
+static char *file_name=0;
+static int file_handle=0;
+static int file_size=0;
+static int *space=0;
+static int depth=0;
+static int return_code=0;
+static char *prog_name="decdrawf";
+static FILE *sprite_file=0;
+static char *sprite_file_name=0;
+static int n_sprites=0;
+static int n_sprites_space=0;	/* number of sprites space in table */
+typedef struct {
+  int name[3];	/* 12 bytes, zero-padded, case insignificant */
+  int *pos;	/* pointer to place in drawfile */
+} sprite_rec;
+/* We just have an array, and search sequentially, rather than having
+ * a hash table, because (1) it's easier, (2) we generally expect fairly
+ * few sprites, and (3) it's more easily extensible.
+ */
+static sprite_rec *sprites;
+/* JPEGs are almost always big. We write each to a separate file.
+ */
+static char *jpeg_prefix=0;
+static int jpeg_next=1;
+static char *jpeg_name=0;
+
+static double unit=1;	/* number of points per unit */
+static char *unit_string="";
+
+static int hexP=0;	/* output dimensions in hex? */
+
+typedef struct { char *name; char *fullname; double size; } Units;
+static Units units[] = {
+  { "pt", "$Points", 1. },
+  { "in", "$Inches", 72. },
+  { "cm", "$Centimetres", 28.3464566929134 },
+  { "mm", "$Millimetres", 2.83464566929134 },
+  { "sp", "$ScaledPoints", 1./640 },
+  { "os", "$OSUnits", 72./180 },
+  { 0,0,0 }
+};
+
+static void err_head(int *a, char *type) {
+  if (short_errors) {
+    if (a) fprintf(stderr,"At offset %X: %s: ",(a-space)<<2,type);
+    else fprintf(stderr,"%s: ",type);
+  } else {
+    if (a)
+      fprintf(stderr,"! %s from %s...\nAt or near offset %X in `%s':\n",
+              type, prog_name, (a-space)<<2, file_name);
+    else
+       fprintf(stderr,"! %s from %s...\nIn `%s':\n",
+              type, prog_name, file_name);
+  }
+}
+
+static void warn(int *a, char *s, ...) {
+  va_list ap;
+  va_start(ap,s);
+  err_head(a,"Warning");
+  vfprintf(stderr,s,ap);
+  va_end(ap);
+  fprintf(stderr,".\n");
+  if (return_code<4) return_code=4;
+}
+
+static void error(int *a, char *s, ...) {
+  va_list ap;
+  va_start(ap,s);
+  err_head(a,"Error");
+  vfprintf(stderr,s,ap);
+  va_end(ap);
+  fprintf(stderr,".\n");
+  exit(8);
+}
+
+static void *xmalloc(unsigned int n, char *s) {
+  void *p=malloc(n);
+  if (p) return p;
+  error(0,"Out of space, trying to allocate %d bytes for %s",n,s);
+  /* this doesn't happen: */
+  return 0;
+}
+
+static void *xrealloc(void *p,unsigned n,char *s) {
+  void *q=realloc(p,n);
+  if (q) return q;
+  error(0,"Out of space, trying to reallocate space for %s to %d bytes",
+        s,n);
+  /* this doesn't happen: */
+  return 0;
+}
+
+static void print_coord(int *a) {
+  if (hexP) {
+    printf("0x%.08X 0x%.08X",a[0],a[1]);
+  }
+  else printf("%lg %lg",a[0]/(640*unit),a[1]/(640*unit));
+}
+
+static void print_udimen(unsigned int x) {
+  if (hexP) printf("0x%.08X",x);
+  else printf("%lg",x/(640*unit));
+}
+
+static void print_sdimen(int x) {
+  if (hexP) printf("0x%.08X",x);
+  else printf("%lg",x/(640*unit));
+}
+
+static void print_line(char *s, ...) {
+  va_list ap;
+  va_start(ap,s);
+  printf("%*s",depth*2,"");
+  vprintf(s,ap);
+  printf("\n");
+  va_end(ap);
+}
+
+static void indent(void) {
+  printf("%*s",depth*2,"");
+}
+
+static char *int2col(int *a, unsigned int c) {
+  static char cc[]="r000g000b000";
+  if (c==0xFFFFFFFF) return "Transparent";
+  if (c&255) warn(a,"Dodgy RGB colour %08X",c);
+  sprintf(cc,"r%dg%db%d",(c>>8)&255,(c>>16)&255,(c>>24)&255);
+  return cc;
+}
+
+static void print_string(char *s) {
+  char c;
+  putchar('"');
+  while ((c=*s++)!=0) {
+    if (c=='\\' || c=='"') putchar('\\');
+    putchar(c);
+  }
+  putchar('"');
+}
+
+/* Return zero for *failure*.
+ */
+static int open_sprite_file(int *s) {
+  n_sprites_space=16;
+  sprites=(sprite_rec*)xmalloc(n_sprites*sizeof(sprite_rec),"sprites");
+  sprite_file=fopen(sprite_file_name,"w+b");
+  if (!sprite_file) {
+    warn(s,"Couldn't open sprite file `%s'",sprite_file_name);
+    return 0; }
+  fseek(sprite_file,12,SEEK_SET);
+  return 1;
+}
+
+/* Write relevant things at start of sprite file, and set its type
+ * correctly.
+ */
+static void close_sprite_file(void) {
+  long z[3];
+  char cl[300];
+  z[0]=n_sprites;
+  z[1]=16;
+  z[2]=ftell(sprite_file)+4;
+  fseek(sprite_file,0,SEEK_SET);
+  fwrite(z,12,1,sprite_file);
+  fclose(sprite_file);
+  sprintf(cl,"SetType %s Sprite",sprite_file_name);
+  system(cl);
+}
+
+/* return non0 if sprite names equivalent:
+ */
+static int cistreq12(const int *a, const int *b) {
+  int i;
+  for (i=0;i<12;++i)
+    if (tolower(((char*)a)[i])!=tolower(((char*)b)[i]))
+      return 0;
+  return 1;
+}
+
+/* |s| points to sprite; |sz| is size in bytes
+ */
+static void write_sprite(int *s, int sz) {
+  if (s[0]!=sz) warn(s,"Sprite size mismatch");
+  if (sprite_file_name && (sprite_file || open_sprite_file(s))) {
+    /* check whether a sprite with this name has already been written */
+    int i;
+    for (i=0;i<n_sprites;++i)
+      if (cistreq12(sprites[i].name,s+1)) {
+        /* Same name. Same sprite? */
+        if (!memcmp(sprites[i].pos,s,sz)) goto prn;
+        warn(s,"Different sprites with identical name `%.12s'",(char*)(s+1));
+        goto zog; }
+    /* no earlier sprite had same name */
+    if (n_sprites<=n_sprites_space) {
+      /* need more space for remembering sprites */
+      n_sprites_space<<=1;
+      sprites=(sprite_rec*)
+              xrealloc(sprites,n_sprites_space*sizeof(sprite_rec),"sprites");
+    }
+zog:
+    memcpy(sprites[n_sprites].name,s+1,12);
+    sprites[n_sprites].pos=s;
+    if (!fwrite(s,sz,1,sprite_file)) error(s,"Error writing sprite file");
+    ++n_sprites;
+prn:
+    indent();
+    printf("FromFile \"%s\" \"%.12s\"\n",sprite_file_name,(char*)(s+1));
+  } else {
+    int i=0;
+    sz>>=2;
+    indent();
+    while (i<sz) {
+      printf("0x%08X",s[i++]);
+      if (i&3) printf(" ");
+      else if (i<sz) { printf("\n"); indent(); }
+    }
+    printf("\n");
+  }
+}
+
+static int do_object(int *a) {
+  int type; int size;
+  type=a[0]; size=a[1]/4;
+  if (type!=0) {
+    indent(); printf("# BoundingBox  ");
+    print_coord(a+2); printf("  "); print_coord(a+4); a+=6;
+    printf("\n");
+    if (type==11) print_line("# (By the way, those should all have been 0)");
+  }
+  else a+=2;
+  switch(type) {
+    case 0: /* font table */
+      print_line("FontTable {"); ++depth;
+      { char *cp=(char *)a; int i=0,l=(size-2)*4;
+        while (i+3<l) {
+          indent(); printf("%d ",cp[i++]);
+          print_string(cp+i); printf("\n");
+          i+=strlen(cp+i)+1;
+          /* i=(i+3)&~3; */
+        }
+      }
+      --depth; print_line("}");
+      break;
+    case 1: /* text */
+      print_line("Text {"); ++depth;
+#ifdef ONLINE_MEDIA
+      indent(); printf("BoundingBox  ");
+      print_coord(a-4); printf("  ");
+      print_coord(a-2); printf("\n");
+#endif
+do_text:
+      print_line("Colour %s",int2col(a,a[0]));
+      print_line("Background %s",int2col(a+1,a[1]));
+      print_line("Style %d",a[2]);
+      indent(); printf("Size "); print_coord(a+3); printf("\n");
+      indent(); printf("StartAt "); print_coord(a+5); printf("\n");
+      indent(); printf("Text "); print_string((char *)(a+7));
+      printf("\n");
+      --depth; print_line("}");
+      break;
+    case 2: /* path */
+      print_line("Path {"); ++depth;
+      print_line("FillColour %s",int2col(a,a[0]));
+      print_line("OutlineColour %s",int2col(a+1,a[1]));
+      indent(); printf("Width "); print_udimen(a[2]); printf("\n");
+      { unsigned int st=(unsigned int)a[3];
+        if (((st&0xFFFF)!=66) ||
+            ((((st&12)==12)||((st&48)==48)) && (st>>16!=0x201))) {
+          print_line("Style {"); ++depth;
+          print_line("# 0x%.08X",st);
+          if (st&3) switch(st&3) {
+            case 0: print_line("Mitred"); break;
+            case 1: print_line("Round"); break;
+            case 2: /* print_line("Bevelled"); */ break;
+            default: warn(a+3,"Dodgy join type");
+          }
+          if ((st>>2)&3) switch((st>>2)&3) {
+            case 1: print_line("EndCap Round"); break;
+            case 2: print_line("EndCap Square"); break;
+            case 3: print_line("EndCap Triangular"); break;
+          }
+          if ((st>>4)&3) switch((st>>4)&3) {
+            case 1: print_line("StartCap Round"); break;
+            case 2: print_line("StartCap Square"); break;
+            case 3: print_line("StartCap Triangular"); break;
+          }
+          if (!(st&64)) print_line("WindingRule NonZero");
+          if (st&128) {
+            int i;
+            print_line("Dash {"); ++depth;
+            indent(); printf("Offset "); print_sdimen(a[4]); printf("\n");
+            indent();
+            for (i=0;i<a[5];++i) { print_sdimen(a[6+i]); printf(" "); }
+            printf("\n");
+            --depth; print_line("}");
+          }
+          if (st&0xFF00) {
+            warn(a+3,"Dodgy path style word");
+            print_line("# Something I don't understand");
+          }
+          if (((st&12)==12)||((st&48)==48)) {
+            print_line("CapWidth %d",(st>>16)&255);
+            print_line("CapLength %d",(st>>24)&255);
+            print_line("# Cap dimensions are in 1/16 of line width");
+          }
+          --depth; print_line("}");
+        }
+        else print_line("# Default style");
+      }
+      { int *b=a+4; int n=0;
+        if (a[3]&128) { b+=2+a[5]; }
+        while (1) {
+          switch(b[n++]) {
+            case 0: goto path_done;
+            case 2: indent(); printf("Move "); print_coord(b+n); n+=2;
+                    printf("\n"); break;
+            case 5: print_line("Close"); break;
+            case 6: indent(); printf("Curve ");
+                    print_coord(b+n); n+=2; printf("  ");
+                    print_coord(b+n); n+=2; printf("  ");
+                    print_coord(b+n); n+=2;
+                    printf("\n"); break;
+            case 8: indent(); printf("Line "); print_coord(b+n); n+=2;
+                    printf("\n"); break;
+            default: warn(b+n-1,"Unknown path item %d",b[n-1]);
+          }
+        }
+path_done: ;
+      }
+      --depth; print_line("}");
+      break;
+    case 5: /* sprite */
+      print_line("Sprite {"); ++depth;
+      indent(); printf("BoundingBox  ");
+      print_coord(a-4); printf("  ");
+      print_coord(a-2); printf("\n");
+      write_sprite(a,(size-6)<<2);
+      --depth; print_line("}");
+      break;
+    case 6: /* group */
+      print_line("Group {"); ++depth;
+      { char q[13]; int *qq=(int*)q; int n=3; q[12]=0;
+        qq[0]=a[0]; qq[1]=a[1]; qq[2]=a[2];
+        indent(); printf("Name "); print_string(q); printf("\n");
+        while (n<size-6) {
+          print_line("# offset-in-group is 0x%X",(n+6)*4);
+          n+=do_object(a+n);
+        }
+      }
+      --depth; print_line("}");
+      break;
+    case 7: /* tagged */
+      print_line("Tagged {"); ++depth;
+      print_line("Identifier 0x%X",a[0]);
+      { int n=1+do_object(a+1);
+        a+=n;
+        while (n<size-6) { print_line("OtherData 0x%X",*a++); ++n;}
+      }
+      --depth; print_line("}");
+      break;
+    case 9: /* text area */
+      print_line("TextArea {"); ++depth;
+      while (*a) {
+        if(a[0]!=10||a[1]!=24) {
+          warn(a,"Dodgy non-column in text area");
+          print_line("# There should be a column here, but there isn't");
+          break;
+        }
+        indent(); printf("Column ");
+        print_coord(a+2); printf("  "); print_coord(a+4); printf("\n");
+        a+=6;
+      }
+      print_line("# Reserved (should be 0): %d %d",a[1],a[2]);
+      print_line("Colour %s",int2col(a+3,a[3]));
+      print_line("Background %s",int2col(a+4,a[4]));
+      print_line("Text {"); ++depth; indent();
+      { char *cp=(char*)(a+5); char c;
+        while ((c=*cp++)!=0) {
+          putchar(c);
+          if (c=='\n'&&*cp) indent();
+        }
+      }
+      --depth; print_line("}");
+      --depth; print_line("}");
+      break;
+    case 10: /* text column */
+      print_line("# A text column appears here. It shouldn't.");
+      warn(a-6,"Misplaced text column");
+      break;
+    case 11: /* options */
+      print_line("Options {"); ++depth;
+      indent(); printf("PaperSize %d     # A%d\n",(a[0]>>8)-1,(a[0]>>8)-1);
+      print_line("Limits {"); ++depth;
+      print_line((a[1]&1)?"Shown":"# not Shown");
+      print_line((a[1]&16)?"Landscape":"# Portrait");
+      print_line((a[1]&256)?"# Default":"NonDefault");
+      --depth; print_line("}");
+      print_line("Grid {"); ++depth;
+      print_line("Spacing %lg",*((double*)(a+2)));
+      print_line("Divisions %d",a[4]);
+      print_line(a[5]?"Isometric":"# Rectangular");
+      print_line(a[6]?"AutoAdjust":"# no AutoAdjust");
+      print_line(a[7]?"Shown":"# not Shown");
+      print_line(a[8]?"Lock":"# no Lock");
+      print_line(a[9]?"# centimetres":"Inches");
+      --depth; print_line("}");
+      print_line("Zoom {"); ++depth;
+      print_line("Ratio %d %d",a[10],a[11]);
+      print_line(a[12]?"Lock":"# no Lock");
+      --depth; print_line("}");
+      print_line(a[13]?"# toolbox present":"NoToolbox");
+      switch(a[14]) {
+        case 1: print_line("Mode Line"); break;
+        case 2: print_line("Mode ClosedLine"); break;
+        case 4: print_line("Mode Curve"); break;
+        case 8: print_line("Mode ClosedCurve"); break;
+        case 16: print_line("Mode Rectangle"); break;
+        case 32: print_line("Mode Ellipse"); break;
+        case 64: print_line("Mode Text"); break;
+        case 128: print_line("Mode Select"); break;
+        default: print_line("# Unknown mode %d",a[14]); break;
+      }
+      print_line("UndoSize %d",a[15]);
+      --depth; print_line("}");
+      break;
+    case 12: /* xftext */
+      print_line("XfText {"); ++depth;
+      print_line("Matrix  %lg %lg %lg %lg  %lg %lg",
+                 a[0]/65536.,a[1]/65536.,a[2]/65536.,a[3]/65536.,
+                 a[4]/(640*unit),a[5]/(640*unit));
+      if (hexP) {
+        print_line("# 16.16 factors: %.08X %.08X %.08X %.08X",
+                   a[0],a[1],a[2],a[3]);
+        print_line("# Draw-unit offsets: %X %X", a[4],a[5]);
+      }
+      indent();
+      if (a[6]&1) printf("Kerned ");
+      if (a[6]&2) printf("RightToLeft ");
+      if ((a[6]&3)!=3) {
+        printf("# ");
+        if (!(a[6]&1)) printf("not-kerned ");
+        if (!(a[6]&2)) printf("left-to-right");
+      }
+      printf("\n");
+      a+=7; goto do_text;
+    case 13: /* xfsprite */
+      print_line("XfSprite {"); ++depth;
+      indent(); printf("BoundingBox  ");
+      print_coord(a-4); printf("  ");
+      print_coord(a-2); printf("\n");
+      print_line("Matrix  %lg %lg %lg %lg  %lg %lg",
+                 a[0]/65536.,a[1]/65536.,a[2]/65536.,a[3]/65536.,
+                 a[4]/(640*unit),a[5]/(640*unit));
+      if (hexP) {
+        print_line("# 16.16 factors: %.08X %.08X %.08X %.08X",
+                   a[0],a[1],a[2],a[3]);
+        print_line("# Draw-unit offsets: %X %X", a[4],a[5]);
+      }
+      a+=6;
+      write_sprite(a,(size-12)<<2);
+      --depth; print_line("}");
+      break;
+    case 16: /* JPEG */
+      print_line("JPEG {"); ++depth;
+      indent(); printf("BoundingBox  ");
+      print_coord(a-4); printf("  ");
+      print_coord(a-2); printf("\n");
+      indent(); printf("Size "); print_coord(a); printf("\n");
+      print_line("DPI %d %d",a[2],a[3]);
+      print_line("Matrix  %lg %lg %lg %lg  %lg %lg",
+                 a[4]/65536.,a[5]/65536.,a[6]/65536.,a[7]/65536.,
+                 a[8]/(640*unit),a[9]/(640*unit));
+      if (hexP) {
+        print_line("# 16.16 factors: %.08X %.08X %.08X %.08X",
+                   a[4],a[5],a[6],a[7]);
+        print_line("# Draw-unit offsets: %X %X", a[8],a[9]);
+      }
+      if (jpeg_prefix) {
+        if (jpeg_next>100) {
+          warn(a,"Too many JPEGs");
+          goto jpeg_done; }
+        sprintf(jpeg_name,"%s%.2d",jpeg_prefix,jpeg_next++);
+        print_line("FromFile \"%s\"",jpeg_name);
+        if (save_file(jpeg_name,a+11,a[10],0xC85)<0)
+          warn(a,"Failed to save `%s'",jpeg_name);
+      } else {
+        int i=0,sz=size-11;
+        print_line("Length %d",a[10]); indent();
+        while (i<sz) {
+          printf("0x%08X",a[11+i++]);
+          if (i&3) printf(" ");
+          else if (i<sz) { printf("\n"); indent(); }
+        }
+        printf("\n");
+      }
+jpeg_done:
+      --depth; print_line("}");
+      break;
+    default:
+      warn(a-6,"Unknown object type %d",type);
+      printf("# <unknown>\n");
+  }
+  return size;
+}
+int main(int ac, char *av[]) {
+  int adr=0;
+  prog_name=av[0];
+  while(++av,--ac) {
+    if (!strcmp(*av,"-v")) {
+      fprintf(stderr,"This is decdrawf, version " VERSION_STRING ".\n");
+      return 0; }
+    if (!strcmp(*av,"-s")) {
+      if (sprite_file_name) goto usage;
+      if (++av,--ac) { sprite_file_name=*av; continue; }
+      else goto usage; }
+    if (!strcmp(*av,"-j")) {
+      if (++av,--ac) { jpeg_prefix=*av; continue; }
+      else goto usage; }
+    if (!strcmp(*av,"-e")) { short_errors=1; continue; }
+    if (!strcmp(*av,"-u")) {
+      if (++av,--ac) {
+        Units *u=units;
+        while (u->name) {
+          if (!strcmp(u->name,*av)) {
+            unit=u->size; unit_string=u->fullname; break; }
+          ++u;
+        }
+        if (u->name) continue; else goto usage;
+      }
+      else goto usage; }
+    if (!strcmp(*av,"-x")) {
+      hexP=1;
+      unit=1./640; unit_string="$ScaledPoints";
+      continue; }
+    if (file_name) goto usage;
+    else file_name=*av;
+  }
+  if (!file_name) {
+usage:
+    fprintf(stderr,
+"Usage: decdrawf [-s spritefile] [-j jpegpfx] [-u units] [-x] [-e] drawfile\n"
+    );
+    return 4; }
+  if (jpeg_prefix)
+    jpeg_name=(char*)xmalloc(strlen(jpeg_prefix)+3,"buffer for JPEG filename");
+  file_handle=low_open(file_name,low_READ);
+  if (!file_handle) error(0,"Couldn't open the input file");
+  file_size=low_extent(file_handle);
+  space=(int*)xmalloc(file_size,"space for drawfile");
+  low_read(file_handle,space,file_size);
+  low_close(file_handle);
+  if (file_size<40) error(space,"This is not a drawfile");
+  if (space[0]!=0x77617244) error(space,"This is not a drawfile");
+  printf("# Drawfile `%s'\n",file_name);
+  printf("# Decoded by decdrawf.\n\n");
+  if (unit!=1.0) printf("Units %s\n\n",unit_string);
+  printf("# Header information:\n");
+  printf("# Format version %d.%d\n",space[1],space[2]);
+  { char q[13]; int *qq=(int*)q; q[12]=0;
+    qq[0]=space[3]; qq[1]=space[4]; qq[2]=space[5];
+    printf("# Creator: `%s'\n",qq);
+  }
+  printf("# Global bounding box:  ");
+  print_coord(space+6); printf("  "); print_coord(space+8);
+  printf("\n");
+  adr=10;
+  depth=0;
+  while (adr<file_size/4) {
+    printf("\n\n# At 0x%X\n",adr*4);
+    adr+=do_object(space+adr);
+  }
+  printf("\n# End of decoded drawfile.\n");
+  if (sprite_file) close_sprite_file();
+  return return_code;
+}

@@ -1,0 +1,11 @@
+I have versions 3 and 5 of the Acorn C compiler. I find that version 3
+sometimes produces better code than version 5; in particular, mkdrawf
+runs significantly faster if c.mouth is compiled using v3 rather than v5.
+(I think this is because v5 copes very badly with the big switch in
+get_x_token().)
+
+I don't know how v4 compares to these two. My guess is that it's worse
+than either, but don't quote me. In any case, if you have two versions
+of the C compiler I suggest that you try compiling *just c.mouth* with
+the earlier one, and see whether that makes mkdrawf run faster. (Try it
+on "koch" or "random" from the examples directory.)

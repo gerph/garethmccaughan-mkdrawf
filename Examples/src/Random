@@ -1,0 +1,36 @@
+# Five random walks. If you ever learned about Brownian motion
+# at school, you'll have seen things like this before.
+
+For $z 0 5 {
+  Path {
+    OutlineColour Floor Times Random 256
+                  Floor Times Random 256
+                  Floor Times Random 256
+    Move 500 500
+    For $q 0 2000 {
+      RLine Minus Times Random 20 10 Minus Times Random 20 10
+    }
+  }
+}
+
+# A "chessboard" whose squares are random colours.
+
+Group {
+  For $x 0 8 {
+    Set $xx Plus 100 Times $x 30
+    For $y 0 8 {
+      Set $yy Plus 100 Times $y 30
+      Path {
+        OutlineColour None
+        FillColour Floor Times Random 256
+                   Floor Times Random 256
+                   Floor Times Random 256
+        Move $xx $yy
+        RLine 30 0
+        RLine 0 30
+        RLine -30 0
+        Close
+      }
+    }
+  }
+}

@@ -1,0 +1,255 @@
+/* mkdrawf.h
+ *
+ * Types, defines etc needed by both mouth.c and stomach.c
+ */
+
+#ifdef ONLINE_MEDIA
+#ifndef TAGS
+#define TAGS 1
+#endif
+#ifdef NO_JPEG
+#undef NO_JPEG
+#endif
+#endif
+
+#define VERSION_STRING "3.10 (13/9/1998)"
+
+typedef unsigned int uint;
+
+/* Something that can be held in a single word:
+ */
+typedef union word {
+  int I;
+  uint U;
+  char *CP;
+  int *IP;
+  void *VP;
+  union word *WP;	/* we'll call this a |Word *| really */
+  uint T;		/* |Type| */
+  union two_words *PP;	/* |TwoWords *| -- P is for pair */
+  struct token *TP;	/* |Token *| */
+  struct saved *SP;	/* |Saved *| */
+  void (*FP)(void);	/* pointer to function */
+  struct looprec *LP;	/* |LoopRecord *| */
+  struct hashent *HP;	/* |HashEntry *| */
+} Word;
+
+/* Something that can be held in two words:
+ */
+typedef union two_words {
+  int I; uint U; char *CP; int *IP; union word *WP;
+  uint T; union two_words *PP; struct token *TP;
+  struct looprec *LP; struct hashent *HP;
+  void (*FP)(void);
+  double D;
+  struct { Word first; Word rest; } P;	/* P for "pair" again */
+} TwoWords;
+
+/* Types of token:
+ * NB: this is just the low byte. The rest may be used for dreadful things.
+ */
+enum {
+  t_NoValue=0,	/* undefined variables etc */
+  t_keyword,	/* Length	*/
+  t_real,	/* 123.456	*/
+  t_string,	/* "foo bar"	*/
+  t_colour,	/* r200g5b123	*/
+  t_toklist,	/* { 1 Foo $3 }	*/
+  t_special,	/* EndIf	*/
+  t_macro,	/* MyMacro	*/
+  t_global,	/* $foo		*/
+  t_local,	/* %bar		*/
+  t_localP,	/* positional parameter */
+  t_openbr,	/* {		*/
+  t_closebr,	/* }		*/
+  t_opensq,	/* [		*/
+  t_closesq,	/* ]		*/
+  t_lparen,	/* (		*/
+  t_rparen,	/* )		*/
+  t_unready,	/* As-yet undefined macro */
+  t_magicEOM,	/* end of macro expansion */
+  t_magicNEXT	/* end of loop token list */
+};
+
+/* The following are all the sorts of special token:
+ */
+enum {
+  s_Define,	/* macro */
+  s_Set,	/* variable */
+  s_IfExists,	/* variable */
+  s_IfLess,	/* numbers */
+  s_IfEqual,	/* anything */
+  s_IfExistsHere,	/* variable */
+  s_Else,
+  s_EndIf,
+  s_For,	/* loop */
+  s_Plus,s_Minus,s_Times,s_Over,s_ToThe,/* arithmetic */
+  s_Sqrt,s_Sin,s_Cos,s_Tan,	/* other functions */
+  s_Arcsin,s_Arccos,s_Arctan,	/* and some more */
+  s_Arctan2,
+  s_Floor,s_Ceiling,
+  s_Abs,s_Sign,
+  s_Include,	/* file inclusion */
+#ifdef TAGS
+  s_TagOpen,s_TagLookup,s_TagClose,
+#endif
+  s_Append,	/* string append */
+  s_GSTrans,	/* call GSTrans, for access to variables etc */
+  s_Font,	/* font name -> number conversion */
+  s_Str2Num,s_Num2Str,	/* Guess what these do */
+  s_Random,	/* random number in [0,1) */
+  s_Units,	/* set units */
+  s_Unit	/* read units */
+};
+
+/* The following are all the keywords:
+ */
+enum {
+  k_Header,	/* pseudo-object for stuff in drawfile header */
+  k_FontTable,k_Text,k_Path,k_Sprite,k_Group,k_Tagged,k_TextArea,k_Column,
+  k_Options,k_XfText,k_XfSprite,	/* object types */
+#ifndef NO_JPEG
+  k_JPEG,
+#endif
+  k_Version,	/* indicate Draw version number */
+  k_Creator,	/* of this file */
+  k_BoundingBox,
+  k_Colour,k_Background,k_Style,
+  k_Size,k_StartAt,	/* things in text objects */
+  k_FillColour,k_OutlineColour,k_Width,	/* top-level in path object */
+  k_Move,k_Close,k_Line,k_Curve,	/* path components */
+  k_RMove,k_RLine,k_RCurve,	/* relative motion */
+  k_Arc,			/* curve approximating a circular arc */
+  k_Mitred,k_Round,k_Bevelled,	/* join types */
+  k_EndCap,k_StartCap,k_Butt,k_Square,k_Triangular, /* cap types. Also Round */
+  k_WindingRule,k_Dash,
+  k_CapWidth,k_CapLength,	/* other path style options */
+  k_NonZero,k_EvenOdd,	/* winding rules */
+  k_Offset,k_Pattern,	/* dash specifications */
+  k_Name,	/* of grouped object */
+  k_Identifier,	/* of tagged object */
+  k_OtherData,	/* for tagged object */
+  k_XText,	/* expanded text in a text area */
+  k_Matrix,k_Kerned,k_RightToLeft,	/* for transformed text object */
+  k_PaperSize,k_Limits,k_Grid,k_Zoom,
+  k_NoToolbox,k_Mode,k_UndoSize,	/* options top-level */
+  k_Shown,k_Landscape,k_NonDefault,	/* limits options */
+  k_Spacing,k_Divisions,k_Isometric,
+  k_AutoAdjust,k_Lock,k_Inches,	/* grid things. */
+  k_Ratio,	/* for zoom */
+  k_ClosedLine,k_ClosedCurve,k_Rectangle,k_Ellipse,k_Select,	/* modes */
+  k_FromFile,	/* in sprite or xfsprite object */
+  k_HCentreIn,k_CentreIn,	/* text centred in a box */
+  k_HCentreOn,k_CentreAt,	/* ditto, more economical */
+  k_Virtual,	/* fake text objects */
+#ifndef NO_JPEG
+  k_DPI,k_Length,
+#endif
+  k_From,k_To,k_Step,k_In,k_Do,	/* loop noise */
+  k_Illegal	/* when sthg goes wrong but need to return a keyword number */
+  /* More will go here when some other things are implemented. */
+};
+
+/* A token has a 1-word type and a 2-word value.
+ * Why 2 words? So that we can fit a |double| into it.
+ */
+typedef struct token {
+  uint type;
+  TwoWords value;
+} Token;
+
+/* The following really ought to be in mouth.c, but it goes here because
+ * it's used in stomach.c as well.
+ * This figure includes the \n\0.
+ */
+#define max_line_length 256
+
+/* Visible variables from general.c:
+ */
+extern char *prog_name;
+extern int line_number;
+extern int no_filenames;
+
+/* Visible variables from mouth.c:
+ */
+extern FILE *input_file;
+extern char *input_file_name;
+extern char *line_tail;
+extern Token curr_token;
+extern int number_had_dimen;
+extern int scaling;
+extern double unit;
+
+/* Visible variables from stomach.c:
+ */
+#ifdef DEBUG
+extern int debug;
+#define d_memory 1
+#define d_0tokens 2
+#define d_tokens 4
+#define d_xtokens 8
+#define d_infix 16
+#endif
+
+/* Visible functions from general.c:
+ */
+extern void warn(char *, ...);
+extern void minor(char *, ...);
+extern void error(char *, ...);
+extern int final_report(void);
+extern void *xmalloc(uint, char *);
+extern void *xrealloc(void *, uint, char *);
+#ifdef DEBUG
+extern void xfree(void *);
+#else
+#define xfree(x) free(x)
+#endif
+extern int cistreq(const char *, const char *);
+extern char *copy_string(const char *s);
+
+/* Visible functions from mouth.c:
+ */
+extern void init_global_hash(void);
+extern int get_line(void);
+extern int get_x_token(int);
+extern double read_double(void);
+extern int read_int(void);
+extern char *read_string(void);
+extern int read_real640(void);
+extern int read_real1000(void);
+extern void read_openbr(void);
+extern void read_closebr(void);
+extern int read_kwd(void);
+extern int read_kwd_or_cbr(void);
+extern int read_colour(void);
+extern void set_variable(const char *, double);
+extern void init_vars(void);
+
+/* Visible functions from stomach.c:
+ */
+extern int font_number(const char *);
+
+/* Visible functions from syscalls.s:
+ */
+extern int findfont(char *name, int xsz, int ysz, int xres, int yres);
+extern void losefont(int handle);
+extern void stringbbox(int handle, char *string, int *bbox, int flags, int *matrix);
+extern int processpath(int *path, int fill_style, int *matrix, int flatness,
+                int width, int *cap_and_join, int *dash_pattern,
+                int *output_buffer);
+extern int gstrans(char *str, char *buf, int len);
+extern int file_size(char *name);
+extern int load_file(char *name, void *address);
+extern int mono_time(void);
+
+#ifdef TAGS
+/* Visible variables from tagfile.c:
+ */
+extern struct tag *tags;
+
+/* Visible functions from tagfile.c:
+ */
+extern int tag_open(const char *);
+extern char *tag_lookup(const char *);
+extern void tag_close(void);
+#endif

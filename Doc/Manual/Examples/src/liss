@@ -1,0 +1,16 @@
+( $factor := $pi / 400 )
+Path {
+  Fillcolour r255g0b0
+  Style { WindingRule EvenOdd }
+  for $i from 0 to 800 {
+    ( (
+    $j := $i * $factor
+    $p := cos ( 9 * $j )
+    $q := sin ( 13 * $j )
+    ) )
+    ifequal $i 0 Move else Line endif
+      ( 400 + 300 * $p )
+      ( 400 + 300 * $q )
+  }
+  Close
+}

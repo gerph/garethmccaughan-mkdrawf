@@ -1,0 +1,3 @@
+int load_file(char *filename, void *address);
+int save_file(char *filename, void *address, int nbytes, int filetype);
+int file_size(char *filename);

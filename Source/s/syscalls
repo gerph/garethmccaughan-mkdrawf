@@ -1,0 +1,139 @@
+; s.syscalls
+
+        GET h.asmregs
+
+X_Bit			EQU 0x020000
+Font_FindFont		EQU 0x040081
+Font_LoseFont		EQU 0x040082
+Font_ScanString		EQU 0x0400A1
+Draw_ProcessPath	EQU 0x040700
+OS_GSTrans		EQU 0x000027
+OS_File			EQU 0x000008
+OS_ReadMonotonicTime	EQU 0x000042
+
+        AREA |A$$code|, CODE, READONLY
+
+; int findfont(char *name, int xsz, int ysz, int xres, int yres);
+;  xsz,ysz in 16ths of a point
+;  xres,yres in dpi
+;  returns font handle, or 0 if not found
+
+        EXPORT findfont
+findfont
+        STMFD   sp!,{r4,r5,lr}
+        LDR     r5,[sp,#12] ; 5th arg
+        MOV     r4,r3
+        MOV     r3,r2
+        MOV     r2,r1
+        MOV     r1,r0
+        SWI     X_Bit+Font_FindFont
+        MOVVS   r0,#0
+        LDMFD   sp!,{r4,r5,pc}^
+
+; void losefont(int handle);
+
+        EXPORT losefont
+losefont
+        CMP     r0,#0
+        SWINE   X_Bit+Font_LoseFont
+        MOVS    pc,lr
+
+; void stringbbox(int handle, char *string, int *bbox, int flags, int *mx);
+;  fills in bounding box, in millipoints, at bbox[5..8]
+;  stuff in bbox[0..4] is from Font_ScanString, if you care.
+;  This assumes the baseline starts at (0,0).
+;  The "flags" word should have bit 0 set iff kerning, and bit 1 set
+;  iff right-to-left.
+;  matrix should be 0 if none, else point to one. (See PRMs for format.)
+
+        EXPORT stringbbox
+stringbbox
+	MOV ip,sp
+        STMFD   sp!,{r4-r6,lr}
+	LDR	r6, [ip]            ; ->matrix
+        MOV     r5, r2              ; coordinate block
+        TST     r3, #1
+        MOVEQ   r2, #(1<<5)         ; no kerning
+        MOVNE   r2, #(1<<5)+(1<<9)  ; kerning
+        TST     r3, #2
+        ORRNE   r2, r2, #(1<<10)    ; right to left
+        ORR     r2, r2, #(1<<18)    ; return bounding box
+	CMP	r6, #0
+	ORRNE	r2, r2, #(1<<6)     ; matrix used
+        MVN     r3, #&80000000
+        MVN     r4, #&80000000
+	MOV	ip, #0
+        STR     ip, [r5]            ; no extra offset on space
+        STR     ip, [r5,#4]
+        STR     ip, [r5,#8]         ; or between letters
+        STR     ip, [r5,#12]
+        MVN     ip, #0
+        STR     ip, [r5,#16]        ; no split character
+        SWI     X_Bit+Font_ScanString
+        LDMFD   sp!,{r4-r6,pc}^
+
+; int processpath(8 args);
+;  calls the SWI Draw_ProcessPath with the arguments in the registers
+;  and returns the resulting value of r0
+
+	EXPORT processpath
+processpath
+	MOV	ip,sp
+	STMFD	sp!,{r4-r7,lr}
+	LDMIA	ip,{r4-r7}
+	SWI	X_Bit+Draw_ProcessPath
+	LDMFD	sp!,{r4-r7,pc}^
+
+; int gstrans(char *str, char *buf, int len);
+;  calls OS_GSTrans on the string in str, putting output in buffer at buf
+;  of length len.
+;  Returns 0 for success, 1 for buffer overflow, 2 for bad string.
+
+	EXPORT gstrans
+gstrans	SWI	X_Bit+OS_GSTrans
+	MOV	r0,#0
+	MOVCS	r0,#1
+	MOVVS	r0,#2
+	MOVS	pc,lr
+
+; int file_size(char *name);
+;  returns -1 for failure.
+
+	EXPORT file_size
+file_size
+	STMFD sp!,{r4,r5,lr}
+	MOV r1,r0
+	MOV r0,#17
+	SWI X_Bit+OS_File
+	MVNVS r0,#0	; error?
+	LDMVSFD sp!,{r4,r5,pc}^
+	TST r0,#1	; file or image file?
+	MVNEQ r0,#0	; no, so return -1
+	MOVNE r0,r4	; yes, so return length
+	LDMNEFD sp!,{r4,r5,pc}^
+
+; int load_file(char *name, void *address);
+;  returns file length for success, -1 for failure.
+
+	EXPORT load_file
+load_file
+	STMFD sp!,{r4,r5,lr}
+	MOV r2,r1	; address in r2
+	MOV r1,r0	; filename in r1
+	MOV r0,#16	; load named file, no path
+	MOV r3,#0	; use address in r2
+	SWI X_Bit+OS_File	; NB this zaps r4,r5
+	MVNVS r0,#0	; -1 if failure
+	MOVVC r0,r4	; file length
+	LDMFD sp!,{r4,r5,pc}^
+
+; int mono_time(void);
+;  return the result of calling SWI OS_ReadMonotonicTime.
+;  Useful for seeding random number generators.
+
+	EXPORT mono_time
+mono_time
+	SWI	X_Bit+OS_ReadMonotonicTime
+	MOVS	pc,lr
+
+        END

@@ -1,0 +1,219 @@
+; >s.lowfile
+;
+; functions for low-level file handling under RISC OS
+;
+; This code occupies about 200 bytes.
+;
+; It provides functions to:
+;   open and close files
+;   read or write a block of bytes
+;   read or set the pointer
+;   test for EOF
+;   read the extent (size) of a file
+;
+; It does NOT give access to OS_BGet and OS_BPut because they are
+; horribly slow. It's almost always much better to use OS_GBPB.
+; Since the only reason for using these routines is efficiency, it doesn't
+; make sense to provide inefficient things that can be done with
+; the standard C calls.
+;
+; All these functions obey APCS-R. On entry, lr is saved on the
+; stack; it's safe to use these in supervisor mode.
+;
+; NOTE: I've also put in the save_file() function, because decdrawf
+;       needs it. This adds 40 bytes to the code size.
+
+        GET h.asmregs
+
+XOS_Bit	EQU 0x020000
+OS_File EQU 0x000008
+OS_Args	EQU 0x000009
+OS_GBPB	EQU 0x00000C
+OS_Find	EQU 0x00000D
+
+
+        AREA |A$$code|, CODE, READONLY
+
+        EXPORT low_open
+        EXPORT low_close
+        EXPORT low_eof
+        EXPORT low_read
+        EXPORT low_write
+        EXPORT low_ptr
+        EXPORT low_setptr
+        EXPORT low_seek
+        EXPORT low_extent
+	EXPORT save_file
+
+; int low_open(char *name, int mode);
+; mode: only bits 4,7 matter.
+;       bit 7 indicates "write"
+;       bit 6 indicates "existing"
+;       having both clear is a mistake
+; returns file handle if OK, 0 if not OK
+
+low_open
+        STMFD   sp!,{lr}
+        AND     r1,r1,#&C0
+        ORR     r1,r1,#&07
+        MOV     r2,r1       ;
+        MOV     r1,r0       ; swap r0,r1
+        MOV     r0,r2       ;
+        SWI     XOS_Bit+OS_Find
+        MOVVS   r0,#0       ; if error
+        LDMFD   sp!,{pc}^   ; return, restoring flags
+
+; void low_close(int handle);
+; if handle==0 this doesn't do anything. (This is not the same
+; as raw OS_Find 0.)
+
+low_close
+        STMFD   sp!,{lr}
+        CMP     r0,#0
+        MOVNE   r1,r0
+        MOVNE   r0,#0
+        SWINE   XOS_Bit+OS_Find
+        LDMFD   sp!,{pc}^
+
+; int low_eof(int handle);
+; returns 0 if not at EOF, 1 if at EOF.
+; undefined behaviour if arg isn't handle of an open file.
+
+low_eof STMFD   sp!,{lr}
+        MOV     r1,r0
+        MOV     r0,#5
+        SWI     XOS_Bit+OS_Args
+        CMP     r2,#0       ; annoying. We need to return 0 or 1.
+        MOVEQ   r0,#0
+        MOVNE   r0,#1
+        LDMFD   sp!,{pc}^
+
+; int low_read(int handle, void *buffer, int nbytes);
+; returns number of bytes actually read; 0 if there was an error.
+
+low_read
+        STMFD   sp!,{r4,r5,lr}
+        MOV     r3,r2       ; number of bytes
+        MOV     r2,r1       ; buffer address
+        MOV     r1,r0       ; handle
+        MOV     r0,#4       ; read, using current file pointer
+        MOV     r5,r2       ; save for later use
+        SWI     XOS_Bit+OS_GBPB
+        MOVVS   r0,#0
+        SUBVC   r0,r2,r5    ; next_byte-first_byte
+        LDMFD   sp!,{r4,r5,pc}^
+
+; void low_write(int handle, void *buffer, int nbytes);
+; doesn't return anything as the corresponding OS_GBPB call doesn't
+; return any useful information.
+
+low_write
+        STMFD   sp!,{r4,r5,lr}
+        MOV     r3,r2       ; number of bytes
+        MOV     r2,r1       ; address
+        MOV     r1,r0       ; handle
+        MOV     r0,#2       ; write, at current position
+        SWI     XOS_Bit+OS_GBPB
+        LDMFD   sp!,{r4,r5,pc}^
+
+; int low_ptr(int handle);
+; returns file pointer
+; an invalid handle will result in garbage
+
+low_ptr STMFD   sp!,{lr}
+        MOV     r1,r0
+        MOV     r0,#0
+        SWI     XOS_Bit+OS_Args
+        MOV     r0,r2
+        LDMFD   sp!,{pc}^
+
+; void low_setptr(int handle, int ptr);
+; sets the file pointer. Again, there isn't anything useful to return.
+
+low_setptr
+        STMFD   sp!,{lr}
+        MOV     r2,r1
+        MOV     r1,r0
+        MOV     r0,#1
+        SWI     XOS_Bit+OS_Args
+        LDMFD   sp!,{pc}^
+
+; int low_seek(int handle, int n, int whence);
+; sets pointer, but now
+;  - if whence==0 does same as setptr
+;  - if whence==1 moves on by n
+;  - if whence==2 moves to end-n
+; I'm not sure what correct behaviour is if we go past EOF or
+; something. I'll use the RISC OS conventions.
+; We return the new pointer position, or -1 for failure. (This
+; appears to be standard for Unix lseek.)
+
+low_seek
+        STMFD   sp!,{lr}
+        CMP     r0,#0
+        BEQ     low_seek_fail    ; 0 is never a valid handle
+        CMP     r2,#1
+        BGT     low_seek_end
+        BEQ     low_seek_advance
+        CMP     r1,#0
+        BLT     low_seek_fail
+        MOV     r2,r1
+        MOV     r1,r0
+low_seek_doit
+        MOV     r0,#1
+        SWI     XOS_Bit+OS_Args
+        BVS     low_seek_fail
+        MOV     r0,#0
+        LDMFD   sp!,{pc}^
+low_seek_advance
+        MOV     r3,r1    ; save
+        MOV     r1,r0
+        MOV     r0,#0
+        SWI     XOS_Bit+OS_Args
+        ADDS    r2,r2,r3 ; new pointer
+        BGE     low_seek_doit
+low_seek_fail
+        MVN     r0,#0
+        LDMFD   sp!,{pc}^
+low_seek_end
+        MOV     r3,r1    ; save
+        MOV     r1,r0
+        MOV     r0,#2
+        SWI     XOS_Bit+OS_Args
+        SUBS    r2,r2,r3 ; new pointer
+        BGE     low_seek_doit
+        B       low_seek_fail
+
+; int low_extent(int handle);
+; reads extent of an open file. Returns a negative number if problems.
+
+low_extent
+        STMFD   sp!,{lr}
+        MOVS    r1,r0
+        BEQ     low_ext_fail
+        MOV     r0,#2
+        SWI     XOS_Bit+OS_Args
+        BVS     low_ext_fail
+        MOV     r0,r2
+        LDMFD   sp!,{pc}^
+low_ext_fail
+        MVN     r0,#0
+        LDMFD   sp!,{pc}^
+
+; int save_file(char *name, void *address, int nbytes, int filetype);
+; returns 0 for success, -1 for failure.
+
+save_file
+	STMFD sp!,{r4,r5,lr}
+	ADD r5,r1,r2	; r5: end address (excl) = start + length
+	MOV r4,r1	; r4: start address
+			; r3: unused
+	MOV r2,r3	; r2: filetype
+	MOV r1,r0	; r1: filename
+	MOV r0,#10	; save file, with filetype etc
+	SWI XOS_Bit+OS_File
+	MVNVS r0,#0
+	MOVVC r0,#0
+	LDMFD sp!,{r4,r5,pc}^
+
+	END

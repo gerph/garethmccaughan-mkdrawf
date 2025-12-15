@@ -1,0 +1,20 @@
+# A little demonstration of the new-style macro invocation syntax.
+# Note that you can combine [...] and {...} if you wish, and that
+# surplus [...] parameters are called %_1 %_2 etc. Note also (though
+# it isn't shown by this file) that if you have [...] you don't need {...} .
+
+Define Foo {
+  Set %x "x" Set %y "y"
+  Bar [ %y %x "zog" ] { %z 321 }
+}
+
+Define Bar [ %x %y ] {
+  Text {
+    StartAt %z 100
+    Size 20 20
+    Style Font "Trinity.Medium"
+    Text Append 3 %x %y %_1
+  }
+}
+
+Foo { }

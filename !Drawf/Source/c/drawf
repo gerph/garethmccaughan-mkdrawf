@@ -1,0 +1,742 @@
+/* Wimp front end for mkdrawf and decdrawf
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#ifdef THROWBACK
+#include "dde.h"
+#endif
+
+#include "load+save.h"
+#include "wimp.h"
+
+#define err_base (1<<30)
+#define appname "Drawf"
+#define tem_file "<Drawf$Dir>.Templates"
+
+/* Icons in the Options window.
+ */
+enum {
+  oi_mdf_frame=0,	oi_mdf_title=1,
+  oi_tagfile_opt=2,	oi_tagfile_icon=3,	oi_tagfile_name=4,
+  oi_ddf_frame=5,	oi_ddf_title=6,
+  oi_sprfile_opt=7,	oi_sprfile_icon=8,	oi_sprfile_name=9,
+  oi_jpegpfx_opt=10,	oi_jpegpfx_icon=11,	oi_jpegpfx_name=12,
+  oi_gen_frame=13,	oi_gen_title=14,
+  oi_run=15,		oi_run_always=16,
+  oi_units=17,		oi_units_left=18,	oi_units_right=19,
+  oi_units_label=20
+};
+
+enum {
+  sv_icon=0,	sv_name=1,	sv_ok=2
+};
+
+#ifdef HELPFUL
+
+static char *opt_help[oi_units_label+1]={
+  "This bit of the window lets you determine how mkdrawf will behave.",
+  "This bit of the window lets you determine how mkdrawf will behave.",
+  "If this is selected, a tagfile will be opened when mkdrawf starts.",
+  "Drag this to a directory viewer to set the name of the tagfile.",
+  "The leafname, or full name, of the tagfile.",
+  "This bit of the window lets you determine how decdrawf will behave.",
+  "This bit of the window lets you determine how decdrawf will behave.",
+  "If this is selected, any sprites will be saved rather than inlined.",
+  "Drag this to a directory viewer to determine where to save sprites.",
+  "The leafname, or the full name, of the file in which to save sprites.",
+  "If this is selected, any JPEG images will be saved rather than inlined.",
+  "Drag this to a directory viewer to determine where to put JPEGs.",
+  "The prefix to which numbers will be appended for saved JPEG files.",
+  "This bit of the window lets you set other options.",
+  "This bit of the window lets you set other options.",
+  "If this is set, the results of running mkdrawf or decdrawf "
+    "will be Filer_Run, so they will be visible immediately.",
+  "If this is set as well as `Filer_Run output', output will be "
+    "Filer_Run even if mkdrawf or decdrawf produces errors.|M"
+    "This is not very likely to be helpful.",
+  "Use the arrows on either side of this to change the units decdrawf"
+    "will use.",
+  "This moves to the next smallest of the units known to decdrawf.",
+  "This moves to the next largest of the units known to decdrawf.",
+  "This bit of the window lets you determine how decdrawf will behave."
+};
+
+static char *save_help[sv_ok+1]={
+  "Drag this to a directory viewer to save the file, "
+    "or to an application that can do something with it.",
+  "The leafname or full name to use when saving the file.",
+  "Click here to save the file."
+};
+
+static char *menu_help[3]={
+  "Move the pointer right to see information about Drawf.",
+  "Click on this menu entry to set various options.",
+  "Click on this menu entry to quit Drawf."
+};
+
+#endif
+
+static int wimp_version=0;
+
+/*------------------------------------------------------------------------*/
+
+/* Icon block etc for icon-bar icon.
+ */
+static Icon_info baricon = {
+  0, { {0,0,92,68},0x7000011A,"" }
+};
+
+/* Main menu.
+ */
+static mblock(3) menu = {
+  "Drawf",
+  7,2,7,0,
+  72,48,0,
+  { {0,0,0x07009021,"Info"},
+    {0,-1,0x07009021,"Options"},
+    {128,-1,0x07009021,"Quit"} }
+};
+
+/* List of messages we're interested in.
+ */
+#ifdef HELPFUL
+static int messages[]={1,2,3,4,0x502,0};
+#else
+static int messages[]={1,2,3,4,0};
+#endif
+
+/*------------------------------------------------------------------------*/
+
+/* Error messages.
+ */
+static err_block(44)
+  out_of_date  = { err_base,"This application requires RISC OS 3." },
+  no_templates = { err_base+1,"I can't open my Templates file." },
+  /* Error number 2 is no longer needed */
+  no_window    = { err_base+3,"My Templates file is broken!" },
+  cw_failed    = { err_base+4,"I failed to create a window." },
+  ci_failed    = { err_base+5,"I failed to create an icon." },
+  aargh        = { err_base+6,"Something really nasty went wrong!" },
+  no_memory    = { err_base+7,"I've run out of memory." },
+  im_busy      = { err_base+8,"Sorry, but I'm busy. Try again later." },
+  no_errfile   = { err_base+9,"I couldn't open an error log file." },
+  save_failed  = { err_base+10,"Something went wrong trying to save that." },
+  too_long     = { err_base+11,"That command line is too long." };
+
+/* |opting_icon| is usually 0.
+ * While dragging an icon from the Options window, or waiting for
+ * the DataSaveAck after doing so, it's the icon number of the
+ * icon in that window which we dragged.
+ */
+static int opting_icon=0;
+
+/* Non-obvious fact: |output_name| contains a non-empty string
+ * if and only if there is an output file waiting to be saved.
+ * In that case, it contains the name of that file.
+ * Similarly for |err_name|.
+ */
+static char output_name[256]="",err_name[256]="";
+static long err_zero=0;	/* size of error file before prog runs */
+
+/* We need to save the name of the input file (earlier versions
+ * brokenly passed around a pointer into our Wimp message block!).
+ * We put it in |input_name|.
+ */
+static char input_name[256]="";
+
+/* While we're doing this sort of thing, we might as well also
+ * have a buffer for putting commands in.
+ * It might be useful for other things, too...
+ * The longest command we ever issue contains 5 pathnames and
+ * some other stuff.
+ * This also needs to be big enough for the window block for
+ * the Options window; ditto for the Save window. No trouble.
+ */
+#define scratch_size 1400
+static char scratch[scratch_size];
+
+/* Another magic number of a similar sort:
+ * This needs to be bigger than the total size of any window (including
+ * indirected data).
+ * At the moment the Options window is getting close, so be careful.
+ */
+#define winbuf_size 2200
+
+/* |lose(err)| reports the error, exits and dies.
+ * Its arg should point to an error block of some sort.
+ */
+static void lose(const void *e) {
+  if (wimp_version>0) {
+    wimp_reporterror((error_block*)e,1,appname);
+    wimp_closedown(); }
+  else
+    fputs(((char*)e)+4,stderr);
+  if (*err_name) remove(err_name);
+  if (*output_name) remove(output_name);
+  exit(0);
+}
+
+/* |err(x)| reports the error, but doesn't exit.
+ */
+static void err(const void *e) {
+  wimp_reporterror((error_block*)e,1,appname);
+}
+
+/* |finish()| exits without an error.
+ */
+static void finish(void) {
+  wimp_closedown();
+  if (*err_name) remove(err_name);
+  if (*output_name) remove(output_name);
+  exit(0);
+}
+
+static void *xmalloc(int n) {
+  void *p=malloc(n);
+  if (!p) lose(&no_memory);
+  return p;
+}
+
+/* Window and icon handles, etc.
+ */
+static int info_handle,*info_inddata;
+static int opt_handle,*opt_inddata;
+static int save_handle,*save_inddata;
+static int baricon_handle=-1;
+
+/*------------------------------------------------------------------------*/
+
+/* Various bits of state.
+ */
+
+static int open_tagfile=0;
+static int use_spritefile=0;
+static int use_prefix=0;
+static char *tagfile_name=0;
+static char *spritefile_name=0;
+static char *jpeg_prefix=0;
+static char *save_ftype=0;
+static char *save_name=0;
+static char *save_title;
+static char *unit_string=0;
+static int units=2;	/* the 2 is magic */
+
+/*------------------------------------------------------------------------*/
+
+/* Forward-declare event handlers.
+ */
+static int do_close(int,int*);
+static int do_click(int,int*);
+static int do_dragbox(int,int*);
+static int do_menu(int,int*);
+static int do_message(int,int*);
+
+/*------------------------------------------------------------------------*/
+
+/* Units.
+ */
+
+typedef struct { char *arg; char *name; } Unit;
+#define n_units 6
+Unit unit_list[n_units] = {
+  { "sp", "Scaled points" },
+  { "os", "OS units" },
+  { "pt", "Points" },
+  { "mm", "Millimetres" },
+  { "cm", "Centimetres" },
+  { "in", "Inches" }
+};
+
+static void update_units(void) {
+  strcpy(unit_string,unit_list[units].name);
+  wimp_seticonstate(opt_handle,oi_units,0,0);
+}
+
+/*------------------------------------------------------------------------*/
+
+/* Find the template for window |name|, put its indirected data ptr at |inddata|
+ * and return the window handle.
+ */
+static int create_window(const char *name, void *space, int **inddata) {
+  int handle,tsize,isize;
+  if (wimp_xtemplate(name,&tsize,&isize,0,0)<0) lose(&no_window);
+  if (tsize>winbuf_size) lose(&cw_failed);
+  *inddata=xmalloc(isize);
+  if (wimp_loadtemplate(name,space,*inddata,isize,(char*)-1,0,0)<0)
+    lose(&no_window);
+  if ((handle=wimp_createwindow(space))<0) lose(&cw_failed);
+  return handle;
+}
+
+/* Turn a control-terminated string into a null-terminated one.
+ */
+void sanitise(char *s) {
+  char c;
+  while ((c=*s++)>=32) ;
+  s[-1]=0;
+}
+
+/* Do all the usual Wimp initialisation things: create windows and icons
+ * and menus, and so on.
+ * Exit in an appropriate way if something goes wrong.
+ */
+static void init_wimp(void) {
+  /* Become a Wimp task. */
+  void *space=xmalloc(winbuf_size);
+  wimp_version=wimp_initialise(310,"Drawf",messages);
+  if (wimp_version<0) lose(&aargh);
+  if (wimp_version<310) lose(&out_of_date);
+  /* Create windows. */
+  if (wimp_opentemplate(tem_file)) lose(&no_templates);
+  info_handle=create_window("Info",space,&info_inddata);
+  opt_handle=create_window("Options",space,&opt_inddata);
+  save_handle=create_window("Save",space,&save_inddata);
+  save_title=((char**)space)[18]+5; /* actually points to "decdrawf output" */
+  free(space);
+  /* Fill in menu. */
+  menu.items[0].leads_to.window=info_handle;
+  /* Bits of writable data. */
+  { Icon_block *i;
+    i=wimp_geticonstate(opt_handle,oi_tagfile_name);
+    tagfile_name=i->data.indtext.text;
+    sanitise(tagfile_name);
+    i=wimp_geticonstate(opt_handle,oi_sprfile_name);
+    spritefile_name=i->data.indtext.text;
+    sanitise(spritefile_name);
+    i=wimp_geticonstate(opt_handle,oi_jpegpfx_name);
+    jpeg_prefix=i->data.indtext.text;
+    sanitise(jpeg_prefix);
+    i=wimp_geticonstate(save_handle,sv_icon);
+    save_ftype=i->data.indsprite.name+5;	/* points to "fff" or "aff" */
+    sanitise(save_ftype);
+    i=wimp_geticonstate(save_handle,sv_name);
+    save_name=i->data.indtext.text;
+    sanitise(save_name);
+    i=wimp_geticonstate(opt_handle,oi_units);
+    unit_string=i->data.indtext.text;
+    strcpy(unit_string,unit_list[units].name);
+  }
+  /* Close the template file, before we forget. */
+  wimp_closetemplate();
+  /* Create iconbar icon. */
+  baricon.window=-7;
+  baricon.block.data.indsprite.name="!drawf";
+  baricon.block.data.indsprite.area=(int*)1;
+  baricon.block.data.indsprite.length=6;
+  if ((baricon_handle=wimp_createicon(0,&baricon))<0) lose(&ci_failed);
+  /* Set up event handlers. */
+  wimpfns[reason_close]=do_close;
+  wimpfns[reason_click]=do_click;
+  wimpfns[reason_dragbox]=do_dragbox;
+  wimpfns[reason_menu]=do_menu;
+  wimpfns[reason_message]=
+   wimpfns[reason_message_rec]=
+   wimpfns[reason_message_ack]=do_message;
+  /* We're done. */
+}
+
+/*------------------------------------------------------------------------*/
+
+/* Shade or unshade icons n+1,n+2 in the options window
+ * according to the selection state of icon n. Also toggle
+ * that state; it's the *new* state that matters.
+ * Returns 1<<21 for selected, else 0.
+ */
+static int maybe_shade(int n) {
+  int t = wimp_geticonstate(opt_handle,n)->flags.val;
+  int u = (t&=(1<<21))<<1;
+  wimp_seticonstate(opt_handle,n,1<<21,0);
+  wimp_seticonstate(opt_handle,n+1,u,1<<22);
+  wimp_seticonstate(opt_handle,n+2,u,1<<22);
+  return t^(1<<21);
+}
+
+/* Leafname from pathname.
+ */
+static const char *leaf(const char *s) {
+  const char *t=s;
+  char c;
+  while ((c=*t++)!=0)
+    if (c=='.'||c==':') s=t;
+  return s;
+}
+
+/* Leafname, or empty string if no path.
+ */
+static const char *leaf0(const char *s) {
+  const char *t=leaf(s);
+  return t==s ? (const char *)"" : t;	/* (const char *)"" ... ludicrous */
+}
+
+/* Leafname of a name in indirected text of icon n in window w.
+ */
+#define leafname(w,n) leaf(wimp_geticonstate((w),(n))->data.indtext.text)
+
+/*------------------------------------------------------------------------*/
+
+#ifdef THROWBACK
+static int using_dde=0;
+#endif
+
+/* When we start a task, we must make sure the command line is
+ * no longer than 256c; otherwise something barfs in a big way
+ * and crashes the machine irrevocably (well, it does with my
+ * machine anyway).
+ */
+static int start_task(char *s) {
+  int l=strlen(s);
+  if (l<256) return wimp_starttask(s);
+#ifdef THROWBACK
+  if (using_dde) return dde_starttask(l,s);
+  else
+#endif
+  err(&too_long); return -1;
+}
+
+/* Create the error file.
+ */
+static void create_errors(const char *prog) {
+  FILE *f=fopen(err_name,"w");
+  if (!f) { err(&no_errfile); *err_name=0; return; }
+#ifdef THROWBACK
+  using_dde=dde_exists();
+#endif
+  fprintf(f,"Errors and warnings from %s:\n"
+            "Input file: %s\n"
+            "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+            "~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n",
+           prog,input_name);
+  err_zero=ftell(f);
+  fclose(f);
+}
+
+#ifdef THROWBACK
+
+/* If we have the DDE available, we can do throwback:
+ * go through the file and send the relevant info to
+ * the DDEUtils SWIs.
+ */
+static void do_throwback(void) {
+  FILE *f=fopen(err_name,"r");
+  unsigned int l; char *cp;
+  throwback_start();
+  throwback_filename(input_name);
+  while (fgets(scratch,256,f)) {
+    sanitise(scratch);
+    if (strncmp(scratch,"Line ",5)) continue;
+    l=(unsigned int)strtoul(scratch+5,&cp,10);
+    if (*cp==':' && cp[1]==' ' && (l || (cp!=scratch+5))) {
+      /* Looks like a real error message. Assume it is. */
+      int ty;
+      if (cp[2]=='w') { ty=0; cp+=11; }
+      else if (cp[2]=='e') { ty=1; cp+=9; }
+      else if (cp[2]=='f') { ty=2; cp+=15; }
+      else ty=2;	/* this shouldn't happen */
+      throwback_error(input_name,l,ty,cp);
+    }
+  }
+  throwback_end();
+  fclose(f);
+}
+
+#endif
+
+/* Actually save the file. To be more precise: copy it to the
+ * right place.
+ * Return 0 for failure, 1 for success.
+ */
+static int do_really_save(void) {
+  /* copy from to ~CDF~V */
+  sprintf(scratch,"Copy %s %s ~CDF~V",output_name,save_name);
+  system(scratch);
+  *output_name=0;
+  wimp_closewindow(&save_handle);
+  return 1;
+}
+
+/* Do the first things needed for a launch.
+ */
+static void begin_launch(void) {
+  strcpy(save_name,leaf0(input_name));
+  if (*output_name) remove(output_name);
+  if (*err_name) remove(err_name);
+  tmpnam(output_name);
+  tmpnam(err_name);
+  hourglass_start(50);
+}
+
+/* And the last.
+ */
+static void finish_launch(char c) {
+  /* Run mkdrawf or decdrawf. */
+  int no_err=1<<21;
+  start_task(scratch);
+  hourglass_off();
+  /* Get the error file opened by a text editor, or else send its contents
+   * to whatever's doing throwback. But don't do any of this if there weren't
+   * any diagnostics.
+   * We don't delete the error file at this point, because the Filer_Run
+   * won't take place instantaneously. It's deleted next time we need to
+   * use an error file...
+   */
+  if (*err_name) {
+    if (file_size(err_name)!=err_zero) {
+      no_err=0;
+#ifdef THROWBACK
+      if (using_dde && c=='a') {
+        do_throwback();
+        remove(err_name);
+        *err_name=0; }
+      else {
+#endif
+        sprintf(scratch,"Filer_Run %s",err_name);
+        system(scratch);
+#ifdef THROWBACK
+      }
+#endif
+    } else { remove(err_name); *err_name=0; }
+  }
+  /* If appropriate, Filer_Run the output file. */
+  if (wimp_geticonstate(opt_handle,oi_run_always)->flags.val&(1<<21)
+      || wimp_geticonstate(opt_handle,oi_run)->flags.val&no_err) {
+    sprintf(scratch,"Filer_Run %s",output_name);
+    system(scratch);
+  }
+  /* Now open the Save window. */
+  strcpy(save_title,c=='a'?"mkdrawf output":"decdrawf output");
+  *save_ftype=c;
+  { int *block=(int*)scratch;
+    block[0]=save_handle;
+    wimp_getwindowinfo(block);
+    wimp_openwindow(block);
+  }
+}
+
+/* Launch mkdrawf. |name| is the name of the input file.
+ */
+static void launch_mkdrawf(const char *name) {
+  strcpy(input_name,name);
+  begin_launch();
+  create_errors("mkdrawf");
+  /* mkdrawf input output 2>>errs -t tags */
+  sprintf(scratch,"mkdrawf -e %s %s %s%s%s%s",
+          input_name,output_name,
+          *err_name?"2>>":"",err_name,
+          open_tagfile?" -t ":"",open_tagfile?tagfile_name:"");
+  finish_launch('a');
+}
+
+static void launch_decdrawf(const char *name) {
+  strcpy(input_name,name);
+  begin_launch();
+  create_errors("decdrawf");
+  /* decdrawf input >output 2>>errs -s sprites -j jpeg */
+  sprintf(scratch,"decdrawf -e %s >%s %s%s%s%s%s%s%s%s",
+          input_name,output_name,
+          *err_name?"2>>":"",err_name,
+          use_spritefile?" -s ":"",use_spritefile?spritefile_name:"",
+          use_prefix?" -j ":"",use_prefix?jpeg_prefix:"",
+          units!=2?" -u ":"",units!=2?unit_list[units].arg:"");
+  finish_launch('f');
+}
+
+/*------------------------------------------------------------------------*/
+
+/* Event handlers.
+ */
+
+static int do_close(int reason, int *block) {
+  reason=reason;
+  if (block[0]==save_handle) {
+    if (*output_name) { remove(output_name); *output_name=0; }
+    if (*err_name) { remove(err_name); *err_name=0; }
+  }
+  wimp_closewindow(block);
+  return 0;
+}
+
+static int do_click(int reason, int *block) {
+  int but=block[2], win=block[3], icn=block[4];
+  reason=reason;
+  /* block[2..4]: buttons, window, icon */
+  if (win==-2 && icn==baricon_handle && but==2)
+    wimp_createmenu((Menu_block*)&menu,block[0]-64,240);
+  if (but==2) return 0;	/* ignore Menu clicks */
+  if (win==save_handle) {
+    if (icn==sv_icon && but==64) {
+      if (opting_icon) err(&im_busy);
+      else begin_drag(save_handle,wimp_geticonstate(save_handle,icn));
+    }
+    else if (icn==sv_ok && but==4)
+      do_really_save();
+    return 0;
+  }
+  if (win!=opt_handle) return 0;
+  /* We now know it's in the options window. Which {ic|butt}on? */
+  if (but==4 || but==1) {
+    if (but==1) {
+      /* Adjust-clicking on units arrows goes the other way.
+       * (Adjust-clicking elsewhere does the same as Select-clicking.)
+       */
+      if (icn==oi_units_left) icn=oi_units_right;
+      else if (icn==oi_units_right) icn=oi_units_left;
+    }
+    switch(icn) {
+      case oi_tagfile_opt: open_tagfile=maybe_shade(oi_tagfile_opt); break;
+      case oi_sprfile_opt: use_spritefile=maybe_shade(oi_sprfile_opt); break;
+      case oi_jpegpfx_opt: use_prefix=maybe_shade(oi_jpegpfx_opt); break;
+      case oi_units_left: if (units>0) { --units; update_units(); } break;
+      case oi_units_right: if (units<n_units-1) { ++units; update_units(); } break;
+    }
+    return 0;
+  }
+  if (but!=64) return 0;	/* not drag */
+  if (icn!=oi_tagfile_icon &&	/* must be one of the file icons */
+      icn!=oi_sprfile_icon &&
+      icn!=oi_jpegpfx_icon) return 0;
+  if (opting_icon) { err(&im_busy); return 0; }
+  begin_drag(opt_handle,wimp_geticonstate(opt_handle,icn));
+  opting_icon=icn;
+  return 0;
+}
+
+static int do_dragbox(int reason, int *block) {
+  reason=reason;
+  wimp_getpointerinfo(block+2);
+  if (block[5]==opt_handle) { opting_icon=0; return 0; }
+  block[7]=block[2];	/* x */
+  block[8]=block[3];	/* y */
+  block[3]=0;	/* your_ref: original message */
+  block[4]=1;	/* Message_DataSave */
+  	/* block[5..8] filled in already */
+  block[9]=0;	/* estimated size in bytes */
+  block[10]=(*save_ftype=='a')?0xAFF:0xFFF;
+  strcpy((char*)(block+11),
+    opting_icon ? leafname(opt_handle,opting_icon+1)
+                : leaf(save_name));
+  block[0]=(strlen((char*)(block+11))+48)&~3;
+  wimp_sendmessage4(reason_message_rec,block,block[5],block[6]);
+  				/* window handle serves as taskID */
+  return 0;
+}
+
+static int do_menu(int reason, int *block) {
+  reason=reason;
+  if (block[0]==1) {
+    /* Open Options window. */
+    int *b=(int*)scratch;
+    b[0]=opt_handle;
+    wimp_getwindowinfo(b);
+    wimp_openwindow(b); }
+  else if (block[0]==2) finish();
+  return 0;
+}
+
+static int do_message(int reason, int *block) {
+  reason=reason;
+  switch(block[4]) {
+    case 0:	/* Message_Quit */
+      finish();
+    case 1:	/* Message_DataSave */
+      if (reason==19 && block[1]==task_handle) {
+        /* Returned to sender ... */
+        opting_icon=0;
+        return 0; }
+      if (block[5]!=-2 || *output_name) return 0;
+      block[0]=60;		/* size of block */
+      block[3]=block[2];	/* your_ref */
+      block[4]=2;		/* DataSaveAck */
+      block[9]=-1;		/* not safe */
+      strcpy((char*)(block+11),"<Wimp$Scrap>");
+      wimp_sendmessage(reason_message,block,block[1]);
+      break;
+    case 2:	/* Message_DataSaveAck */
+      if (opting_icon) {
+        char *z;
+        if (block[1]==task_handle) {
+          opting_icon=0; return 0; }
+        switch(opting_icon) {
+          case oi_tagfile_icon: z=tagfile_name; break;
+          case oi_sprfile_icon: z=spritefile_name; break;
+          case oi_jpegpfx_icon: z=jpeg_prefix; break;
+          default: return 0; /* shouldn't happen */
+        }
+        strcpy(z,(char*)(block+11));
+        wimp_seticonstate(opt_handle,opting_icon+1,0,0);
+        opting_icon=0; return 0;
+        /* *Don't* send DataLoad: we haven't saved anything! */
+      } else {
+        strcpy(save_name,(char*)(block+11));
+        wimp_seticonstate(save_handle,sv_name,0,0);
+        do_really_save();
+        block[3]=block[2];	/* your_ref */
+        block[4]=3;		/* DataLoad */
+        wimp_sendmessage(reason_message_rec,block,block[1]);
+      }
+      break;
+    case 3:	/* Message_DataLoad */
+      if (reason==19 && block[1]==task_handle) {
+        /* Returned to sender ... */
+        err(&save_failed);
+        return 0;
+      }
+      if (block[5]!=-2) return 0;	/* not iconbar icon */
+#if 0
+      if (block[1]==task_handle && saving) {
+        remove(output_name); *output_name=0; busy=0; saving=0;
+        err(&save_failed); return 0; }
+#endif
+      switch(block[10]) {
+        case 0xFFF: case 0xFE4:
+          launch_mkdrawf((char*)(block+11)); break;
+        case 0xAFF: launch_decdrawf((char*)(block+11)); break;
+        default: return 0;	/* don't know how to deal with that... */
+      }
+      /* Better be polite and acknowledge the message */
+      block[3]=block[2];	/* your_ref */
+      block[4]=4;		/* DataLoadAck */
+      wimp_sendmessage(reason_message,block,block[1]);
+      break;
+    case 4:	/* Message_DataLoadAck */
+      break;
+#ifdef HELPFUL
+    case 0x502: {
+      int win=block[8],icn=block[9],l;
+      char *msg=0;
+      if (win==-2) msg="This is the Drawf icon.|M"
+                       "Drag a text file to it to make it into a drawfile using mkdrawf.|M"
+                       "Drag a drawfile to it to decode it using decdrawf.";
+      else if (win==opt_handle) {
+        if ((unsigned)icn<=oi_run_always) msg=opt_help[icn]; }
+      else if (win==save_handle) {
+        if ((unsigned)icn<=sv_ok) msg=save_help[icn]; }
+      else if (win==(int)&menu) msg=menu_help[icn];
+      else {
+        int b[3];
+        wimp_getmenustate0(b);
+        if ((unsigned)b[0]<3) msg=menu_help[b[0]];
+      }
+      if (msg) {
+        block[3]=block[2];
+        block[4]=0x503;
+        l=strlen(msg);
+        memcpy((char*)(block+5),msg,l+1);
+        block[0]=(l+24)&~3;
+        wimp_sendmessage(reason_message,block,block[1]); }
+    }
+#endif
+  }
+  return 0;
+}
+
+int main(void) {
+  init_wimp();
+  while (1)
+    wimp_poll(mask_null|mask_ptr_leaving|mask_ptr_entering|
+              mask_losecaret|mask_gaincaret);
+  /* Not reached: */
+  return 0;
+}

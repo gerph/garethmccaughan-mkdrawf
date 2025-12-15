@@ -1,0 +1,2300 @@
+/* mouth.c
+ *
+ * That portion of mkdrawf 3 dealing with macro expansion rather than
+ * with what happens once things are expanded.
+ *
+ * The mouth/stomach terminology is, I believe, due to Knuth.
+ */
+
+/* Main differences from mkdrawf 2:
+ *
+ * 1. There is a single global hash table, which contains every
+ *    keyword and every macro definition seen so far.
+ *    Of course that means it's rather bigger than the
+ *    pathetic 677-entry one used in mkdrawf 2.
+ *
+ * 2. Token lists (for macros, loops etc) are refcounted,
+ *    and discarded when they're finished with. (NOT DONE YET)
+ */
+
+#include <ctype.h>
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "mkdrawf.h"
+
+
+/* -------------------------- tokens -------------------------- */
+
+
+/* We use a null token to denote "no value".
+ * This is the default value for hash table entries because
+ * static arrays are initialised to be full of zeros.
+ */
+static Token null_token={0,0};
+
+/* For debugging we need the following, which displays the current
+ * token in a fairly sane form.
+ * If |x!=0| this is coming from |get_x_token()| rather than |get_token()|,
+ * and we indicate the fact.
+ */
+#ifdef DEBUG
+static char *name(struct hashent *);
+static const char *special_name(int);
+static void show_token(const char * x) {
+  if (x) printf("%s:",x);
+  switch(curr_token.type) {
+    case t_NoValue: printf("<no value>"); break;
+    case t_keyword: printf("keyword:#%d",curr_token.value.I); break;
+    case t_real:    printf("%lg",curr_token.value.D); break;
+    case t_string:  printf("\"%s\"",curr_token.value.CP); break;
+    case t_colour:  printf("colour:0x%08X",curr_token.value.I); break;
+    case t_toklist: printf("<token list>"); break;
+    case t_special: printf("%s",special_name(curr_token.value.I)); break;
+    case t_macro:   printf("macro:??"); break;
+    case t_global:  printf("%s",name(curr_token.value.HP)); break;
+    case t_local:   printf("%s",name(curr_token.value.HP)); break;
+    case t_localP:  printf("pospar:%%%d",curr_token.value.I); break;
+    case t_openbr:  printf("{"); break;
+    case t_closebr: printf("}"); break;
+    case t_opensq:  printf("["); break;
+    case t_closesq: printf("]"); break;
+    case t_lparen:  printf("("); break;
+    case t_rparen:  printf(")"); break;
+    case t_unready: printf("unready:%s",name(curr_token.value.HP)); break;
+    case t_magicEOM:   printf("EOM"); break;
+    case t_magicNEXT:  printf("NEXT"); break;
+    default: printf("illegal:%d",curr_token.type);
+  }
+  putchar(' ');
+}
+#endif
+
+/* This must be kept in step with <mkdrawf.h>, of course.
+ */
+static const char * toktype_names[] = {
+  "<no value>", "a keyword", "a number", "a string",
+  "a colour", "a token list", "a special token", "a macro name",
+  "a global variable", "a local variable", "a positional parameter",
+  "<{>","<}>","<[>","<]>", "<(>", "<)>",
+  "an undefined macro", "a magic EOM token", "a magic NEXT token"
+};
+
+static const char * toktype_name(int tt) {
+  int t=tt&255;
+  if (t<=t_magicNEXT) return toktype_names[t];
+  return "some weird token";
+}
+
+/* This, also.
+ */
+#ifdef DEBUG
+static const char * special_names[] = {
+  "Define",	/* macro */
+  "Set",	/* variable */
+  "IfExists",	/* variable */
+  "IfLess",	/* numbers */
+  "IfEqual",	/* anything */
+  "IfExistsHere",	/* variable */
+  "Else",
+  "EndIf",
+  "For",	/* loop */
+  "Plus","Minus","Times","Over","ToThe",/* arithmetic */
+  "Sqrt","Sin","Cos","Tan",	/* other functions */
+  "Arcsin","Arccos","Arctan",	/* and some more */
+  "Arctan2",
+  "Floor","Ceiling",
+  "Abs","Sign",
+  "Include",	/* file inclusion */
+#ifdef TAGS
+  "TagOpen","TagLookup","TagClose",
+#endif
+  "Append",	/* string append */
+  "GSTrans",	/* call GSTrans, for access to variables etc */
+  "Font",	/* font name -> number conversion */
+  "Str2Num","Num2Str",	/* Guess what these do */
+  "Random",	/* random number in [0,1) */
+  "Units",	/* set units */
+  "Unit"	/* read units */
+};
+
+static const char * special_name(int sn) {
+  char s[20];
+  if (sn>=0 && sn<=s_Unit) return special_names[sn];
+  else { sprintf(s, "special:%d", sn); return s; }
+}
+#endif
+
+/* -------------------------- forward declarations -------------------------- */
+
+
+static int toklists_on_stack;
+static TwoWords *next_token;
+
+static int get_token0(void);
+static int get_token(void);
+static void unget_token(void);
+
+
+/* -------------------------- memory management -------------------------- */
+
+
+/* We allocate new |Token| and |TwoWords| objects using a simple-minded
+ * but fast method: we have a freelist", and grab a block of space using
+ * |malloc()| when necessary. We never return freed stuff to the system;
+ * only to the free list.
+ */
+
+/* We do something similar for saved-variable records too, but that's
+ * dealt with later.
+ */
+
+#define alloc_unit 4096	/* number of lumps to claim from system */
+
+static int *free_list_2=0;	/* for |TwoWords| objects (2 words) */
+static int *free_list_3=0;	/* for |Token| objects (3 words) */
+
+static TwoWords *new_two(void) {
+  int *t=free_list_2;
+#ifdef DEBUG
+  if (debug&d_memory)fprintf(stderr,"[+2]");
+#endif
+  if (!t) {
+    int i;
+    t=free_list_2=(int*)xmalloc(alloc_unit*8,"2-word objects");
+    for (i=0;i<alloc_unit;++i) {
+      *free_list_2=(int)(free_list_2+2); free_list_2+=2; }
+    free_list_2[-2]=0;
+  }
+  free_list_2=(int*)t[0]; return (TwoWords*)t;
+}
+
+static Token *new_three(void) {
+  int *t=free_list_3;
+#ifdef DEBUG
+  if (debug&d_memory) fprintf(stderr,"[+3]");
+#endif
+  if (!t) {
+    int i;
+    t=free_list_3=(int*)xmalloc(alloc_unit*12,"3-word objects");
+    for (i=0;i<alloc_unit;++i) {
+      *free_list_3=(int)(free_list_3+3); free_list_3+=3; }
+    free_list_3[-3]=0;
+  }
+  free_list_3=(int*)t[0]; return (Token*)t;
+}
+
+/* To free an object, just stick it back on the free-list it came from.
+ * NOTE: At the moment, nothing is *ever* freed. I'll work on this.
+ * LATER NOTE: that's no longer true, but not because I've really
+ * improved anything. It's just that some temporary storage can be
+ * reclaimed trivially.
+ */
+
+#if 1	/* NOW FALSE: -> we never use these, see */
+
+static void free_two(TwoWords *p) {
+#ifdef DEBUG
+  if (debug&d_memory) fprintf(stderr,"[-2]");
+#endif
+  *((int*)p)=(int)free_list_2;
+  free_list_2=(int*)p;
+}
+
+static void free_three(Token *p) {
+#ifdef DEBUG
+  if (debug&d_memory) fprintf(stderr,"[-3]");
+#endif
+  *((int*)p)=(int)free_list_3;
+  free_list_3=(int*)p;
+}
+
+#endif
+
+#define new_pair new_two
+#define free_pair free_two
+#define new_token new_three
+#define free_token free_three
+
+/* The |void *| is a hack; it assumes that conversion to/from |void*|
+ * doesn't change bit patterns. On RISC OS, we're OK.
+ */
+static TwoWords *cons_(void *x,TwoWords *y) {
+  TwoWords *p=new_pair();
+  p->P.first.VP=x; p->P.rest.PP=y;
+  return p;
+}
+
+#define cons(x,y) cons_((void*)(x),(y))
+
+
+/* -------------------------- the hash table -------------------------- */
+
+
+/* We use the method of coalescing lists.
+ * The way this works is that the table is larger than the number of
+ * possible hash values; the list heads go in the low bit of the table,
+ * and extra entries, when they get chained onto lists, are allocated
+ * starting at the high end.
+ * It's called the "method of coalescing lists" because once allocation
+ * of non-head items reaches the low part of the hash table we just allow
+ * them to occupy "list-head" positions; this means that from then on, the
+ * corresponding list starts in the middle of the earlier one.
+ * Making the low part occupy about 85% of the whole table results in
+ * very little degradation from this coalescing; on average a full table
+ * will require <2 probes per lookup.
+ *
+ * It's hard to delete tokens from this sort of hash table without
+ * disaster, because doing that disconnects lists. It can be done,
+ * but it's painful. It's easier just to leave things in the table
+ * for ever, so we do that.
+ *
+ * This is the same algorithm used in TeX and METAFONT, by Don Knuth
+ * (although I'm pretty sure he didn't invent it.) I have used the
+ * same values of |hash_size| and |hash_prime| as he did; this should
+ * be very much more than enough.
+ */
+
+#define hash_size 2100		/* size of whole table */
+#define hash_prime 1777		/* amount available to list heads */
+
+static uint next_free=hash_size-1;
+
+/* A hash table entry contains a key (a string, the name of the variable
+ * or keyword or whatever), a value (a token) and a "next entry in list"
+ * field. Unfortunately this is 5 words, which isn't going to make things
+ * very efficient. And with 2000-odd entries, we really want each entry
+ * to be small.
+ *
+ * Well, we only need 16 bits for the "next" field. We can squeeze the
+ * "key" field into 16 bits too, by putting variable names etc into a
+ * special-purpose array of characters. With about 2000 items, we can
+ * allow 32k (say) of string space without any fear of overflow.
+ *
+ * There's a little problem: we want to start with all entries zero,
+ * and use |next==0| to mean end-of-list. But 0 is a valid offset into
+ * the hash table. The solution I've adopted, with regret, is to
+ * refrain from ever linking to the 0th element of the hash table.
+ * This would only happen one insertion before it overflows anyway.
+ */
+
+#define string_table_size 16384
+static char string_table[string_table_size];
+static uint next_free_char=0;
+
+/* OK, so this is now what a hash table entry looks like:
+ */
+typedef struct hashent {
+  uint both;	/* high bits contain |key|; low bits contain |next| */
+  struct token value;
+} HashEntry;
+
+/* |name(v)| is the name of the variable whose hash address is |v|.
+ * If speed is important, it's better to write this out explicitly.
+ */
+static char *name(HashEntry *v) {
+  return string_table+(v->both>>16);
+}
+
+/* And here's the hash table itself:
+ */
+static HashEntry hash_table[hash_size];
+
+/* When we look up an entry and it's not there, we *always* want to
+ * create an entry for it.
+ * If there wasn't one before, the new entry will contain a null token,
+ * because |static| arrays are initialised to all-zeros.
+ */
+static HashEntry *hashloc(const char *key) {
+  uint h=0,i,l=0;
+  /* Put hash value into h, and length of string into l: */
+  while ((i=key[l++])!=0) { h=(h<<1)+i; while (h>=hash_prime) h-=hash_prime; }
+  /* Search table: */
+  while ((i=hash_table[h].both)!=0) {
+    int j=i>>16;
+    if (!strcmp(string_table+j,key)) return hash_table+h;	/* found */
+    j=i-(j<<16); if (!j) break;	/* end of list */
+    h=j;
+  }
+  /* Not found. */
+  if (i) {
+    while (next_free>0 && hash_table[next_free].both) --next_free;
+    if (!next_free) error("Hash table overflow");
+    hash_table[h].both=(i&0xFFFF0000)+next_free; h=next_free--;
+  }
+  /* Now we need to install |key| in the string table, and make
+   * "h.key" point to it.
+   */
+  if (next_free_char+l>=string_table_size) error("String table overflow");
+  memcpy(string_table+next_free_char,key,l);
+  hash_table[h].both=next_free_char<<16;	/* key=n_f_c, next=0 */
+  next_free_char+=l;
+  return hash_table+h;
+}
+
+
+/* -------------------------- positional parameters ------------------------ */
+
+
+/* NB: Read the next section before this one! */
+
+/* It's possible to refer in a macro to the tokens that follow the macro
+ * invocation, by using "positional parameters" looking like %1 .. %9.
+ * As many are read as are needed.
+ * Bear in mind that they are read *with* expansion, so if they include
+ * <Set> or similar tokens they may cause funny things to happen at
+ * funny times... (Also, such things will refer to the variable bindings
+ * extant when they're expanded.)
+ */
+
+#define max_pos_param 9
+
+/* We need to stack these, just as we do with ordinary local variables.
+ * We also need to remember, for each macro invocation, how many pp's
+ * have been used so far.
+ * Most macros don't use *any* positional parameters; those that do
+ * tend not to use very many. So it makes sense to use the same
+ * mechanism as that for ordinary variables, rather than storing
+ * all 9 pp values every time.
+ */
+
+#define max_macro_level 256
+static char n_pps_[max_macro_level+1];
+static char *n_pps=n_pps_-1;	/* because 0 means no macros used... */
+
+/* So that we *can* treat these sort of as like ordinary locals,
+ * we need |HashEntry|s for them. So here we are.
+ * I'm afraid |pp_val[0]| is the entry for %1. Sorry.
+ */
+
+static HashEntry pp_val[max_pos_param];
+
+/* When we are reading tokens so as to set a positional parameter,
+ * we need to be sure of reading them from the right place.
+ * So when we enter a macro, we remember what our token-list state
+ * was just before the invocation got started.
+ * Reading pp's may cause some of these token-lists to end, but that's
+ * OK; it will just result in some 0s in the array of token-lists.
+ */
+
+typedef struct {
+  int toks_depth;
+  TwoWords *next_tok;
+} MacroContext;
+
+static MacroContext macro_context_[max_macro_level+1];
+static MacroContext *macro_context=macro_context_-1;
+
+
+/* -------------------------- local variables -------------------------- */
+
+
+/* When we set a local variable while expanding a macro call,
+ * we need to make sure we can restore its value later.
+ * But it's only the first time it's referred to that we need
+ * to bother saving the old value. How can we make sure that
+ * the value gets saved the first time a variable is changed,
+ * but not other times?
+ *
+ * Answer: maintain a count of how deeply nested macros are at
+ *         any given moment. When a local variable is changed,
+ *         check whether it's been changed before at this level;
+ *         if it has, leave it alone. When a variable's value
+ *         is restored, we need to restore the level too.
+ *
+ * This unfortunately requires yet another field in each hash
+ * table entry.
+ * We use the top byte of the |type| field of the token for this.
+ * This is pretty unpleasant, but it seems to be the best way
+ * to deal with the problem. Note that this implies a maximum
+ * nesting depth of 256.
+ *
+ * Of course, we must remember to clear those bits any time we
+ * reference a variable...
+ */
+
+static uint macro_level=0;
+
+/* A saved value is described by saying where in the hash table it
+ * belongs, what its value was and when it was saved.
+ * The |next| field is used to hold the save stack together.
+ */
+typedef struct saved {
+  HashEntry *loc;
+  Token value;
+  int level;
+  struct saved *next;
+} Saved;
+
+/* We allocate and free saved-variable records in the same sort of
+ * straightforward way as we used for tokens and such.
+ */
+static Saved *free_list_Saved=0;
+#ifdef DEBUG
+static Saved *new_saved_(void) {
+  Saved *t=free_list_Saved;
+  if (debug&d_memory) fprintf(stderr,"[+S]");
+  if (!t) {
+    int i;
+    t=free_list_Saved=(Saved *)xmalloc(256*sizeof(Saved),
+                                       "saved-local records");
+    for (i=0;i<256;++i) {
+      *(Saved**)free_list_Saved=free_list_Saved+1; ++free_list_Saved; }
+    *(int*)(free_list_Saved-1)=0;
+  }
+  free_list_Saved=*(Saved**)t;
+  return t;
+}
+#define New_saved(x) (x)=new_saved_()
+static void free_saved(Saved *p) {
+  if (debug&d_memory)fprintf(stderr,"[-S]");
+  *(Saved**)p=free_list_Saved;
+  free_list_Saved=p;
+}
+#else
+static Saved *new_saved_(void) {
+  int i;
+  { Saved *t=free_list_Saved=(Saved *)xmalloc(256*sizeof(Saved),
+                                              "saved-local records");
+    for (i=0;i<256;++i) { *(Saved**)t=t+1; ++t; }
+    *(int*)(t-1)=0;
+  }
+  { Saved *u=free_list_Saved;
+    free_list_Saved=*(Saved**)u;
+    return u;
+  }
+}
+#define New_saved(x) { if (free_list_Saved) { x=free_list_Saved;\
+ free_list_Saved=*(Saved**)free_list_Saved; }\
+ else x=new_saved_(); }
+#define free_saved(p) { *(Saved**)(p)=free_list_Saved; free_list_Saved=p; }
+#endif
+
+/* Saved values are held on a linked list. (This means that there
+ * is no restriction on the number of variables we can save in each
+ * macro invocation.)
+ */
+
+static Saved *last_saved;	/* most recently saved thing */
+
+/* |set_local| sets the value of the local variable whose hash address
+ * is |var| to be |value|.
+ */
+static void set_local(HashEntry *var, Token *value) {
+  int l=var->value.type>>24;
+  if (l!=macro_level) {
+    /* Need to save the old value */
+    Saved *s;
+    New_saved(s);
+    s->loc=var; s->value=var->value; s->level=macro_level;
+    s->next=last_saved; last_saved=s;
+  }
+  var->value.type=value->type | (macro_level<<24);
+  var->value.value=value->value;
+}
+
+/* Decrement |macro_level|, restoring any saved locals.
+ */
+static void pop_level(void) {
+  if (!macro_level) minor("Misplaced |pop_level()|");
+  else {
+    Saved *s=last_saved;
+    while (s && s->level==macro_level) {
+      s->loc->value=s->value;
+      { Saved *t=s; s=s->next; free_saved(t); }
+    }
+    last_saved=s;
+    /* Next two lines explained in next section */
+    toklists_on_stack=macro_context[macro_level].toks_depth;
+    next_token=macro_context[macro_level].next_tok;
+    --macro_level;
+  }
+}
+
+
+/* -------------------------- input and output -------------------------- */
+
+
+/* We read data from an input file, and write it to an output file.
+ */
+
+FILE *input_file=0;
+char *input_file_name=0;
+
+/* With the |Include| command we may have several input files
+ * open at once. We hold the names and FILE *'s of the inactive
+ * ones in a stack. Highest number = most recently opened.
+ */
+
+#define max_files_on_stack 16	/* so can have 17 open at once */
+
+static int files_on_stack=0;
+static struct {
+  char *name;
+  FILE *file;
+  int line;
+} file_stack[max_files_on_stack];
+
+/* Note: |get_line| and |line_tail| below are NOT |static| because they
+ * are accessed directly by |do_textarea()| in stomach.c. This is ugly,
+ * but necessitated by the syntax used; avoiding it would make using
+ * text areas even more unpleasant than it already is.
+ */
+
+/* The currently-being-processed line of input is contained in
+ * |curr_line|. The first character in it that hasn't been
+ * processed is in |line_tail|.
+ */
+
+static char curr_line[max_line_length]="";
+char *line_tail=curr_line;
+
+/* |get_line()| reads a new line of input into |curr_line|. It deals
+ * with closing finished input files, etc.
+ * It returns 1 if there are no more lines available, else 0.
+ */
+int get_line(void) {
+  while (!fgets(curr_line,max_line_length,input_file)) {
+    if (ferror(input_file))
+      minor("Read error for input file `%s'",input_file_name);
+    if (!files_on_stack) return 1;
+    fclose(input_file);
+    input_file=file_stack[--files_on_stack].file;
+    input_file_name=file_stack[files_on_stack].name;
+    line_number=file_stack[files_on_stack].line;
+  }
+  line_tail=curr_line;
+  ++line_number;
+  return 0;
+}
+
+/* |open_new_file(s)| checks that we aren't nesting files too deeply,
+ * then tries to open the file whose name is |s|. If it succeeds, it
+ * pushes the current input file onto the stack and replaces it with
+ * the new file.
+ */
+static void open_new_file(char *s) {
+  FILE *f;
+  if (files_on_stack>=max_files_on_stack) {
+    minor("Files nested too deeply (maximum=%d)",max_files_on_stack);
+    return;
+  }
+  f=fopen(s,"r");
+  if (!f) error("Couldn't open file `%s' for inclusion",s);
+  file_stack[files_on_stack].name=input_file_name;
+  file_stack[files_on_stack].file=input_file;
+  file_stack[files_on_stack++].line=line_number;
+  input_file_name=s;
+  input_file=f;
+  line_number=0;
+}
+
+
+/* -------------------------- conditionals -------------------------- */
+
+
+/* To keep track of If/Else/EndIf constructs we have a stack of
+ * "pending" <If>s. Let's be more precise about how this works...
+ *
+ * If we encounter an <If> with a *false* condition, we skip tokens
+ * until reaching an <Else> or an <EndIf>; if it's an <EndIf> we're done;
+ * if it's an <Else> we stack the fact that we are waiting for an <EndIf>.
+ *
+ * If we encounter an <If> with a *true* condition, we stack the fact
+ * that we're waiting for an <Else>.
+ *
+ * If we encounter an <Else>, we look at the top of the If-stack. If
+ * it says "waiting for an <Else>", we skip until finding an <EndIf>.
+ * If it says "waiting for an <EndIf>", we complain "two Elses".
+ *
+ * If we encounter an <EndIf>, we check that the If-stack isn't empty,
+ * and pop off its top element.
+ *
+ * Thus we only really need one *bit* per entry in this stack. Mucking
+ * about with bit-arrays is a pain, though. We use an array of |char|s.
+ * An entry of 0 means "looking for an <EndIf>"; 1 means "looking for an
+ * <Else> (or an <EndIf>)".
+ */
+
+#define max_ifs_on_stack 256
+static char if_stack[max_ifs_on_stack];
+static int ifs_on_stack=0;
+
+/* |skip_tokens()| does just what it says: skips past tokens looking
+ * for an |Else| or an |EndIf|, taking care over the matching of Ifs.
+ * (We don't worry about the matching of braces, because we might want
+ * code like
+ *   If blah { ..... EndIf
+ *   ...
+ *   If blah } EndIf
+ * ... maybe.)
+ *
+ * |skip_tokens()| returns 0 if it finds an <EndIf>, a <1> if it finds
+ * an <Else>, a 99 if it hits EOF or a file error. So we're happy iff
+ * the number this returns is <= the appropriate number from the stack.
+ */
+static int skip_tokens(void) {
+  int depth=0;
+  while (1) {
+    if (get_token()) return 99;
+    if (curr_token.type==t_special) {
+    /* What follows is naughty, yes. I guarantee to keep the relevant
+     * values <32. */
+      int q=1<<curr_token.value.U;
+      if (q & ((1<<s_IfExists) | (1<<s_IfLess)
+               | (1<<s_IfEqual) | (1<<s_IfExistsHere)
+               | (1<<s_EndIf) | (1<<s_Else))) {
+        if (q==1<<s_EndIf) { if (depth) --depth; else return 0; }
+        else if (q==1<<s_Else) { if (!depth) return 1; }
+        else ++depth;
+      }
+    }
+  }
+  /* This point is never reached. */
+  return 99;
+}
+
+/* Purely for convenience, macros for stacking things on the
+ * If-stack.
+ * |stack_else| means "remember that we're waiting for an <Else>";
+ * |stack_endif| means "remember that we're waiting for an <EndIf>".
+ */
+#define stack_else {\
+ if (ifs_on_stack>=max_ifs_on_stack) error("Too many nested Ifs");\
+ if_stack[ifs_on_stack++]=1; }
+#define stack_endif {\
+ if (ifs_on_stack>=max_ifs_on_stack) error("Too many nested Ifs");\
+ if_stack[ifs_on_stack++]=0; }
+
+
+/* -------------------------- loops -------------------------- */
+
+
+/* When we encounter a <For> token, we create a token list
+ * which ends with a special token. This special token has
+ * type |t_magicNEXT|, and its |value| field points to a
+ * record describing the loop. It needs to record the variable
+ * being used, its limit value, and a pointer to the start of
+ * the token list.
+ *
+ * The final `next-pointer' in the loop token list -- the one
+ * associated with the special token -- points to the value
+ * of |next_token| to use for continuing after the end of the
+ * loop.
+ *
+ * As of version 3.10, the loop record format is changing.
+ * The numeric <For> can have a "step" value, and there's
+ * also an iterate-over-a-token-list <For>. In the latter
+ * case, expansion should have happened when the loop record
+ * was created, so our task is just to pop off a single token
+ * and look at its value.
+ */
+
+#define lr_Numeric 1	/* set this bit in |flags| for numeric <For> */
+#define lr_Downwards 2	/* set this bit for a numeric loop counting down */
+
+typedef struct looprec {
+  int flags;		/* see above */
+  HashEntry *var;	/* variable being used */
+  union {
+    struct {
+      double step;	/* change per iteration */
+      double limit;	/* stop when we pass this */
+    } N;
+    struct {
+      TwoWords * tokens;/* tail of token list to iterate over */
+    } T;
+  } info;
+  TwoWords *start;	/* start of body token list */
+} LoopRecord;
+
+
+/* -------------------------- colours ------------------------- */
+
+
+/* We recognise a few specific colours as having known values.
+ * This table says what they are.
+ * Actually, for slightly improved efficiency we have two tables:
+ * one for non-Wimp colours and one for Wimp colours.
+ */
+static struct { const char *name; int value; } colours_nw[] = {
+  /* magic */
+  { "none", -1 },
+  { "transparent", -1 },
+  /* simple colours */
+  { "black", 0x00000000 },
+  { "white", 0xFFFFFF00 },
+  { "red",   0x0000FF00 },
+  { "green", 0x00FF0000 },
+  { "blue",  0xFF000000 },
+  /* that's all */
+  { 0,0 }
+};
+static struct { const char *name; int value; } colours_w[] = {
+  /* Wimp colours */
+  { "0", 0xFFFFFF00 },
+  { "1", 0xDDDDDD00 },
+  { "2", 0xBBBBBB00 },
+  { "3", 0x99999900 },
+  { "4", 0x77777700 },
+  { "5", 0x55555500 },
+  { "6", 0x33333300 },
+  { "7", 0x00000000 },
+  { "8", 0x99440000 },  { "_darkblue",   0x99440000 },
+  { "9", 0x00EEEE00 },  { "_yellow",     0x00EEEE00 },
+  { "10", 0x00CC0000 }, { "_lightgreen", 0x00CC0000 },
+  { "11", 0x0000DD00 }, { "_red",        0x0000DD00 },
+  { "12", 0xBBEEEE00 }, { "_beige",      0xBBEEEE00 },
+  { "13", 0x00885500 }, { "_darkgreen",  0x00885500 },
+  { "14", 0x00BBFF00 }, { "_orange",     0x00BBFF00 },
+  { "15", 0xFFBB0000 }, { "_lightblue",  0xFFBB0000 },
+  /* that's all */
+  { 0,0 }
+};
+
+
+/* -------------------------- infix rearrangement -------------------------- */
+
+/* When |get_token| encounters an lparen, it calls a little
+ * recursive-descent parser, returning a token list. It then
+ * pushes that list onto its stack.
+ */
+
+/* The last argument to |parse| is an integer indicating the precedence
+ * of the last operator. A large value of |p| means that we should
+ * stop as soon as possible; a small value means that we should
+ * continue as long as possible. So, for instance, after reading
+ * an lparen we pass a value of 0.
+ * (Negative values aren't defined, just in case we want to do
+ * something horrible with them.)
+ */
+#define INFINITY 1048576
+
+/* We have to do a lot of messing with token lists.
+ * Here are some useful macros to save typing and confusion.
+ * CARP(l) points to the token CAR(l).
+ */
+#define CARP(l) ((l)->P.first.TP)
+#define CAR(l) (*((l)->P.first.TP))
+#define CDR(l) ((l)->P.rest.PP)
+
+/* Append the current token to a list ending at |end|,
+ * and return the new list end.
+ * This copies the cdr of the old end token to the new one.
+ */
+static TwoWords * add_token(TwoWords * end) {
+  TwoWords * result = new_two();
+  Token    * token  = new_token();
+  *token = curr_token;
+  CARP(result)=token;
+  CDR(result)=CDR(end);
+  CDR(end)=result;
+  return result;
+}
+
+/* Here's the parser itself. Pass it the last pair of the current
+ * token-list; it will put its parsed stuff there and return the
+ * new last pair. You also need to pass a precedence indicator,
+ * of course.
+ * If there's an error, this returns 0.
+ */
+static TwoWords * parse(TwoWords * t, int p) {
+  TwoWords * t1 = t;	/* we keep this pointing to the end, & t -> start */
+lBegin:
+  if (get_token0()) {
+lLoseEOF:
+    minor("EOF or error within infix expression");
+    return 0;
+  }
+  switch(curr_token.type) {
+    /* After an lparen, we allow any number of expressions.
+     * The results are simply concatenated. This is to allow
+     * calls to operators that take several parameters.
+     * We don't make any effort to avoid things like
+     * ( ( 1 2 3 ) + 4 ) .
+     * It would be easy to do that by making the code at |done1|
+     * complain if it sees an infix operator after a multi-rparen.
+     */
+    case t_lparen:
+      while (1) {
+        t1 = parse(t1, 0); if (!t1) return 0;
+        if (get_token0()) goto lLoseEOF;
+        if (curr_token.type == t_rparen) break;
+        unget_token();
+      }
+      break;
+    /* After an open[] or open{}, again, we allow any number
+     * of expressions. In these cases, however, we include
+     * the delimiters in the resulting token list.
+     */
+    case t_opensq: case t_openbr:
+      { int closing_type = t_opensq ? t_closesq : t_closebr;
+        t1 = add_token(t1);
+        while (1) {
+          t1 = parse(t1, 0); if (!t1) return 0;
+          if (get_token0()) goto lLoseEOF;
+          if (curr_token.type == closing_type) break;
+          unget_token();
+        }
+      }
+      t1 = add_token(t1);
+      break;
+    /* After a right-anything, of course we return immediately.
+     * When we do so, we leave that token pending.
+     * Because a pair of delimiters need not have anything
+     * inside it, we need to handle this case here as well
+     * as in the loop after |done1|.
+     */
+    case t_rparen: case t_closesq: case t_closebr:
+      unget_token();
+      return t1;
+    /* A macro token is added to the token list but doesn't
+     * constitute a value; we expect to find its arguments
+     * inside [] or {} or something.
+     */
+    case t_macro:
+      t1 = add_token(t1);
+      goto lBegin;
+    /* All the other interesting cases are specials of various sorts.
+     */
+    case t_special:
+      switch(curr_token.value.I) {
+        /* Prefix operators:
+         * (Plus and minus are stupid and need special treatment.)
+         */
+        case s_Plus: case s_Minus:
+          t1 = add_token(t1);
+          curr_token.type = t_real;
+          curr_token.value.D = 0.0;
+          t1 = add_token(t1);
+          t1 = parse(t1, INFINITY);
+          break;
+        case s_Sqrt: case s_Sin: case s_Cos: case s_Tan:
+        case s_Arcsin: case s_Arccos: case s_Arctan: case s_Arctan2:
+        case s_Floor: case s_Ceiling: case s_Sign: case s_Abs:
+#ifdef TAGS
+        case s_TagLookup:
+#endif
+        case s_Append: case s_GSTrans: case s_Font:
+        case s_Str2Num: case s_Num2Str:
+          t1 = add_token(t1);
+          t1 = parse(t1, INFINITY);
+          break;
+        /* Nullary operators:
+         */
+        case s_Random: case s_Unit:
+          t1 = add_token(t1);
+          goto done1;
+        /* Other things are forbidden.
+         */
+        default:
+          minor("Illegal special (number %d) in infix expression",
+                curr_token.value.I);
+          unget_token();
+          return 0;
+      }
+      break;
+    /* Anything else just goes into the token list without change.
+     */
+    default:
+      t1 = add_token(t1);
+      break;
+  }
+done1:
+  /* At this point, we have (stuff denoting) a single value
+   * in the list beginning at |t| and ending at |t1|.
+   * We now expect an infix operator or something of the
+   * sort. If we see anything else then we just return
+   * leaving the token pending.
+   */
+  while (1) {
+    if (get_token0()) goto lLoseEOF;
+    if (curr_token.type==t_special) switch(curr_token.value.I) {
+      case s_Plus: case s_Minus:
+        if (p>300) { unget_token(); return t1; }
+        (void)add_token(t);
+        t1 = parse(t1, 301);
+        continue;
+      case s_Times: case s_Over:
+        if (p>400) { unget_token(); return t1; }
+        (void)add_token(t);
+        t1 = parse(t1, 401);
+        continue;
+      case s_ToThe:
+        if (p>500) { unget_token(); return t1; }
+        (void)add_token(t);
+        t1 = parse(t1, 500);
+        continue;
+      case s_Set:
+        (void) add_token(t);
+        t1 = parse(t1, 0);
+        continue;
+    }
+    unget_token();
+    return t1;
+  }
+}
+
+/* |parse_infix()| is a wrapper intended to isolate any weird
+ * params needed for recursive descent from the rest of the
+ * program. |parse()| is the main function here.
+ */
+static TwoWords * parse_infix(void) {
+  TwoWords tw;
+  tw.P.rest.PP=0;
+  { TwoWords * end = parse(&tw, 0);
+    if (end) { CDR(end)=0; return tw.P.rest.PP; }
+    else return 0;
+  }
+}
+
+
+/* -------------------------- lexing -------------------------- */
+
+
+/* The token we have just read is in |curr_token|.
+ */
+Token curr_token;
+
+/* When we are reading tokens from a token list, the address
+ * of the next token to be read is in |*(next_token->P.first.TP)|,
+ * and the next value for |next_token| is in |next_token->P.rest.PP|.
+ * When we are not reading from a token list, this contains 0.
+ * It always contains either 0 or a pointer to a genuine token.
+ */
+static TwoWords *next_token;
+
+/* There may be tokens waiting from several different token-lists.
+ * We have a stack of waiting token-lists, the top element of which
+ * is in effect cached in |next_token|.
+ * Each item on this stack is ready to be put into |next_token| when
+ * it's time to use it.
+ */
+
+#define max_toklists_on_stack 256
+static int toklists_on_stack=0;
+static TwoWords *tok_stack[max_toklists_on_stack];
+
+/* As a cheap and nasty way of doing token-putting-back,
+ * if |pending| is non-zero then |get_token| just returns
+ * the current token.
+ * This *is* cheap and nasty; I'm pretty sure there are
+ * circumstances in which it is actually wrong. However,
+ * it's used in rather restrictive ways, and it's safe.
+ */
+static int pending=0;
+
+void unget_token(void) {
+  if (pending) minor("Eek! I tried to unget two consecutive tokens.");
+  pending=1;
+}
+
+/* Since explicitly-specified dimensions just turn into numbers
+ * when lexed, the following variable is occasionally useful.
+ */
+extern int number_had_dimen = 0;
+
+/* |get_token()| returns 1 when there are no more tokens available,
+ * which signals the end of input; or else returns 0 having put
+ * a token in |curr_token|.
+ * Usually, |get_token()| just calls |get_token0()|, which is the
+ * basic lexer. But if it sees an lparen, it calls the infix
+ * rearranger first.
+ */
+#ifdef DEBUG
+static int get_token0_(void);
+static int get_token0(void) {
+  int i=get_token0_();
+  if (debug&d_0tokens) show_token("0");
+  return i;
+}
+static int get_token0_(void) {
+#else
+static int get_token0(void) {
+#endif
+  /* The following can only happen at the outset, so it goes
+   * before |again|.
+   */
+  if (pending) { pending=0; return 0; }
+  /* Reading from a token list? */
+again:
+  number_had_dimen = 0;
+  if (next_token) {
+    curr_token=*(next_token->P.first.TP);
+    next_token=next_token->P.rest.PP;
+    if (curr_token.type>=t_magicEOM) {
+      /* end of token list. Need to do clever things */
+      /* At the end of this block we should read another token */
+      switch(curr_token.type) {
+      case t_magicEOM:
+        /* end of macro. Restore variables. */
+        pop_level();
+        break;
+      case t_magicNEXT: {
+        /* end of loop. Update variable, & do the right thing. */
+        LoopRecord *l=curr_token.value.LP;
+        HashEntry *v=l->var;
+
+        if (l->flags & lr_Numeric) {
+          /* Numeric <For>. Increment the variable and test for end. */
+          double x;
+          if ((v->value.type&0xFF)!=t_real) {
+            minor("Abuse of loop variable <%s>", name(v));
+            x = l->info.N.limit + l->info.N.step;
+          }
+          else x = v->value.value.D + l->info.N.step;
+          if ((l->flags & lr_Downwards && (x >= l->info.N.limit))
+              || (!(l->flags & lr_Downwards) && (x <= l->info.N.limit))) {
+            v->value.value.D = x;
+            next_token = l->start;
+          }
+        }
+        else {
+          /* Token-list <For>. Advance the pointer and test for end. */
+          TwoWords * p = l->info.T.tokens;
+          if (p) {
+            v->value = *(p->P.first.TP);
+            l->info.T.tokens = p->P.rest.PP;
+            next_token = l->start;
+          }
+        }
+        break; }
+      default: minor("Mysterious token, type=%d(%s) (magicEOM=%d)",
+                     curr_token.type,toktype_name(curr_token.type),t_magicEOM);
+      }
+      goto again;
+    }
+    /* here: not a magic token. Just use it */
+    return 0;
+  }
+  /* No tokens waiting in |next_token|... Any on stack? */
+  if (toklists_on_stack) {
+    next_token=tok_stack[--toklists_on_stack];
+    goto again; }
+  /* No tokens waiting at all. Extract next token from current line. */
+lex:
+  while (isspace(*line_tail)) ++line_tail;
+  if (!*line_tail) { if (get_line()) return 1; else goto lex; }
+  /* OK, now we can actually get to work. */
+  { char tok[max_line_length];
+    char *cp;
+    char *olt;
+    olt=line_tail; cp=tok;
+    while (*line_tail && !isspace(*line_tail)) *cp++=tolower(*line_tail++);
+    *cp=0;
+    /* There's now a token at |tok|. */
+    if (cp==tok+1) {
+#define S(n) curr_token.type=t_special; curr_token.value.I=n; return 0
+      switch(*tok) {
+        case '{': curr_token.type=t_openbr; return 0;
+        case '}': curr_token.type=t_closebr; return 0;
+        case '[': curr_token.type=t_opensq; return 0;
+        case ']': curr_token.type=t_closesq; return 0;
+        case '(': curr_token.type=t_lparen; return 0;
+        case ')': curr_token.type=t_rparen; return 0;
+        case '+': S(s_Plus);
+        case '-': S(s_Minus);
+        case '*': S(s_Times);
+        case '/': S(s_Over);
+        case '^': S(s_ToThe);
+      }
+#undef S
+    }
+    /* A variable? */
+    if (*tok=='%') {
+      if (cp==tok+2 && isdigit(tok[1])) {
+        curr_token.type=t_localP;
+        curr_token.value.U=tok[1]-'0'; }
+      else {
+        curr_token.type=t_local;
+        curr_token.value.HP=hashloc(tok); }
+      return 0; }
+    if (*tok=='$') {
+      curr_token.type=t_global;
+      curr_token.value.HP=hashloc(tok);
+      return 0; }
+    /* No. An infix Set? */
+    if (cp==tok+2 && *tok==':' && tok[1]=='=') {
+      curr_token.type=t_special;
+      curr_token.value.I=s_Set;
+      return 0;
+    }
+    /* No. A string? */
+    if (*tok=='"') {
+      char *s=xmalloc(max_line_length,"a string");
+      char *sp=s;
+      int bs=0;
+      for (cp=olt+1;*cp&&(bs||*cp!='"');) {
+        if (!bs) {
+          if (*cp=='\\') { bs=1; cp++; continue; }
+        }
+        else bs=0;
+        *sp++=*cp++;
+      }
+      line_tail=cp+1;
+      do *sp++=0; while ((sp-s)&3);	/* pad to word boundary */
+      if (!*cp) warn("Unterminated string");
+      curr_token.type=t_string;
+      curr_token.value.CP=s;
+      return 0; }
+    /* No. A comment? */
+    if (*tok=='#') { if (get_line()) return 1; else goto lex; }
+    /* No. A number? */
+    { double d;
+      char *cp2;
+      d=strtod(tok,&cp2);
+      /* If |strtod()| fails, try for a hex number */
+      if (cp2!=cp && *tok=='0' && tok[1]=='x')
+        d=(double)strtoul(tok+2,&cp2,16);
+      if (cp2==cp) {
+        curr_token.type=t_real;
+        curr_token.value.D=d;
+        return 0;
+      }
+      /* Perhaps it's a dimension: i.e., a number followed by
+       * a dimension name. NB that we need to keep these dimensions
+       * in step with those elsewhere.
+       */
+      if (cp-cp2==2 && cp2!=tok) {
+        /* speculatively: */
+        curr_token.type=t_real; if (scaling) d/=unit;
+        number_had_dimen = 1;
+        /* now try all known units */
+        if (cp2[0]=='s' && cp2[1]=='p') {
+          curr_token.value.D=d/640; return 0; }
+        else if (cp2[0]=='o' && cp2[1]=='s') {
+          curr_token.value.D=d*72./180.; return 0; }
+        else if (cp2[0]=='p' && cp2[1]=='t') {
+          curr_token.value.D=d; return 0; }
+        else if (cp2[0]=='m' && cp2[1]=='m') {
+          curr_token.value.D=d*2.83464566929134; return 0; }
+        else if (cp2[0]=='c' && cp2[1]=='m') {
+          curr_token.value.D=d*28.3464566929134; return 0; }
+        else if (cp2[0]=='i' && cp2[1]=='n') {
+          curr_token.value.D=d*72; return 0;
+        }
+      }
+    }
+    /* No. A colour? */
+    if (*tok=='r') {
+      int r,g,b;
+      if (sscanf(tok,"r%dg%db%d",&r,&g,&b)==3) {
+        curr_token.type=t_colour;
+        curr_token.value.U=(r<<8)+(g<<16)+(b<<24);
+        return 0;
+      }
+    }
+    { int i=0;
+      while (colours_nw[i].name) {
+        if (!strcmp(tok,colours_nw[i].name)) {
+          curr_token.type=t_colour;
+          curr_token.value.I=colours_nw[i].value;
+          return 0;
+        }
+        ++i;
+      }
+    }
+    if (!memcmp(tok,"wimp",4)) {
+      int i=0;
+      while (colours_w[i].name) {
+        if (!strcmp(tok+4,colours_w[i].name)) {
+          curr_token.type=t_colour;
+          curr_token.value.I=colours_w[i].value;
+          return 0;
+        }
+        ++i;
+      }
+    }
+    /* No. Presumably a macro, then. Or perhaps a keyword or special. */
+    { HashEntry *h=hashloc(tok);
+      if (h->value.type)
+        /* Macro or keyword or special */
+        curr_token=h->value;
+      else {
+        /* Apparently a macro, but not yet defined */
+        curr_token.type=t_unready;
+        curr_token.value.HP=h;
+      }
+      return 0;
+    }
+  }
+}
+
+static int get_token(void) {
+  int x = get_token0();
+  if (x || curr_token.type!=t_lparen) {
+#ifdef DEBUG
+    if (debug&d_tokens) show_token(0);
+#endif
+    return x;
+  }
+  { TwoWords * t = parse_infix();
+    if (t) {
+#ifdef DEBUG
+      if (debug&d_infix) {
+        TwoWords * u=t;
+        fprintf(stderr,"<<LIST ");
+        while (u) {
+          Token spong = curr_token;
+          curr_token = CAR(u);
+          show_token(0);
+          curr_token = spong;
+          u = CDR(u);
+        }
+        fprintf(stderr,">> ");
+      }
+#endif
+      /* We have a spare rparen, we hope. */
+      (void)get_token0();
+      if (toklists_on_stack>=max_toklists_on_stack)
+        error("Too many nested token lists");
+      else tok_stack[toklists_on_stack++] = t;
+    }
+    return get_token();
+  }
+}
+
+
+/* -------------------------- expanding -------------------------- */
+
+/* Before |get_x_token()| itself (which expands things until
+ * it finds a primitive token and then returns), here are some
+ * useful functions.
+ */
+
+/* Read a variable name, and return a pointer to its hash entry.
+ * If something goes wrong, complain and return 0.
+ * If |already| is non-0, the token we're after has already
+ * been read.
+ */
+static HashEntry * get_variable(int already, const char * context) {
+  if (!already && get_token()) {
+    minor("EOF or read error when looking for a variable for %s", context);
+    return 0;
+  }
+  if (curr_token.type==t_global) return curr_token.value.HP;
+  if (curr_token.type==t_local) {
+    if (macro_level) return curr_token.value.HP;
+    minor("Local variable reference (%s) outside any macro (for %s)",
+          name(curr_token.value.HP), context);
+    return 0;
+  }
+  minor("I expected to find a variable but found %s (for %s)",
+        toktype_name(curr_token.type), context);
+  return 0;
+}
+
+/* |had_error| is non-zero iff an error was associated with the
+ * last token we read.
+ */
+static int had_error = 0;
+
+/* (Maybe) read a token and see whether it all goes horribly wrong.
+ */
+static int check_x_token(int already, const char * context) {
+  if (already && had_error) return 0;
+  if (!already && get_x_token(0)) {
+    minor("EOF or read error in %s", context);
+    had_error=1;
+    return 0;
+  }
+  had_error=0;
+  return 1;
+}
+
+/* (Maybe) read a token and see whether it's a given keyword.
+ * Set |had_error| if there's an error; if this happens we always
+ * return 0.
+ */
+static int check_keyword(int already, const char * context, int num) {
+  if (!check_x_token(already, context)) return 0;
+  return (curr_token.type==t_keyword && curr_token.value.I==num);
+}
+
+/* (Maybe) read a token and complain if it isn't a given keyword.
+ * xxx: the error message could use some improvement!
+ */
+static int require_keyword(int already, const char * context, int num) {
+  if (!check_keyword(already, context, num) || had_error) {
+    minor("I expected to find keyword %d but found %s (for %s)",
+          num, toktype_name(curr_token.type), context);
+    return 0;
+  }
+  return 1;
+}
+
+/* (Maybe) read a token and see whether it's a real number.
+ * Set |had_error| if there's an error; if this happens
+ * we always return 0.
+ */
+static int check_real(int already, const char * context) {
+  if (!check_x_token(already, context)) return 0;
+  return (curr_token.type==t_real);
+}
+
+/* (Maybe) read a token and complain if it isn't a real
+ * number. Return 1 if it is, else 0. The number can be
+ * found in |curr_token.value.D|, of course.
+ */
+static int require_real(int already, const char * context) {
+  if (!check_real(already, context)) {
+    minor("I expected to find a real but found %s (for %s)",
+          toktype_name(curr_token.type), context);
+    had_error=1;
+    return 0;
+  }
+  return 1;
+}
+
+/* In a sense, this is the heart of the program. The function
+ * |get_x_token()| expands things until it's found a `primitive'
+ * token, and then returns with |curr_token| set.
+ *
+ * Primitive tokens are numbers, colours, keywords, strings, open/close
+ * braces (usually) and sometimes token-lists (which are, indeed, much
+ * less primitive than the rest).
+ *
+ * If |seq!=0| and the first primitive token found is a <{>, we
+ * collect together all tokens between that and the matching <}>
+ * into a token-list.
+ */
+
+#define EOFerr(x) { minor("EOF or error in %s construct", x); return 1; }
+
+#ifdef DEBUG
+static int get_x_token_(int);
+int get_x_token(int seq) {
+  int i=get_x_token_(seq);
+  if (debug&d_xtokens) show_token("X");
+  return i;
+}
+static int get_x_token_(int seq) {
+#else
+int get_x_token(int seq) {
+#endif
+next:
+  if (get_token()) return 1;
+again:
+  switch(curr_token.type) {
+    case t_NoValue: {
+      minor("Null token (illegal)");
+      goto next; }
+    case t_real:
+    case t_string:
+    case t_colour:
+    case t_keyword:
+      return 0;
+    case t_toklist:
+      if (seq) return 0;
+      if (toklists_on_stack>=max_toklists_on_stack)
+        error("Too many nested token lists");
+      else tok_stack[toklists_on_stack++]=curr_token.value.PP;
+      goto next;
+    case t_special:
+      /* Warning: this is long. */
+      switch(curr_token.value.I) {
+        case s_Define: {
+          HashEntry *h;
+          TwoWords *p=0,*q;
+          int depth=0;
+          TwoWords *npp=0;	/* named positionals inside [] */
+          if (get_token()) EOFerr("Define");
+          if (curr_token.type!=t_unready)
+            error("Illegal Define");
+          h=curr_token.value.HP;
+          if (get_token()) error("EOF or error in Define construct");
+          if (curr_token.type==t_opensq) {
+            TwoWords *npq=0;	/* tail of npp list */
+            while (1) {
+              if (get_token()) EOFerr("Define");
+              if (curr_token.type==t_closesq) break;
+              if (curr_token.type!=t_local) error("Illegal Define");
+              { TwoWords *u=new_pair();
+                u->P.first.HP=curr_token.value.HP;
+                if (npp) npq=(npq->P.rest.PP=u); else npq=npp=u;
+              }
+            }
+            if (npq) npq->P.rest.PP=0;
+            if (get_token()) EOFerr("Define");
+          }
+          if (curr_token.type!=t_openbr) error("Illegal Define");
+          while (1) {
+            if (get_token()) EOFerr("Define");
+            if (curr_token.type==t_openbr) ++depth;
+            if (curr_token.type==t_closebr && !depth--) break;
+            { Token *t=new_token(); TwoWords *u=new_pair();
+              *t=curr_token; u->P.first.TP=t;
+              if (p) q=(q->P.rest.PP=u); else q=p=u;
+            }
+          }
+          /* add end-of-macro token */
+          { Token *t=new_token(); TwoWords *u=new_pair();
+            t->type=t_magicEOM;
+            u->P.first.TP=t; u->P.rest.PP=0;
+            if (p) q->P.rest.PP=u; else p=u; }
+          /* now p points to text of macro expansion */
+          q=new_pair(); q->P.first.PP=npp; q->P.rest.PP=p;
+          /* q is value for hash entry: <namedpos,body> */
+          h->value.type=t_macro;
+          h->value.value.PP=q;
+          goto next; }	/* definition expands to nothing */
+        case s_Set: {
+          if (get_token()) EOFerr("Set");
+          if (curr_token.type==t_local) {
+            HashEntry *h=curr_token.value.HP;
+            if (!macro_level) { minor("Local variable reference outside macro");
+                                goto next; }
+            if (get_x_token(1)) EOFerr("Set");
+            set_local(h,&curr_token);
+            goto next; }
+          if (curr_token.type==t_global) {
+            HashEntry *h=curr_token.value.HP;
+            if (get_x_token(1)) EOFerr("Set");
+            h->value=curr_token;
+            goto next; }
+          minor("Attempt to Set a non-variable");
+          goto next; }
+        case s_IfExists:
+          if (get_token()) EOFerr("If");
+          if (curr_token.type==t_global || curr_token.type==t_local) {
+            if (curr_token.value.HP->value.type) { stack_else; goto next; }
+iffalse:    { int i=skip_tokens();
+              if (i==99) EOFerr("If");
+              if (i==1) stack_endif;   }
+            goto next;
+          }
+          else {
+            minor("IfExists with non-variable");
+            goto iffalse;
+          }
+        case s_IfExistsHere:
+          if (get_token()) EOFerr("If");
+          if (curr_token.type==t_global || curr_token.type==t_local) {
+            if (curr_token.type==t_global
+                || curr_token.type==t_local
+                   && curr_token.value.HP->value.type
+                   && curr_token.value.HP->value.type>>24==macro_level)
+              { stack_else; goto next; }
+              else goto iffalse;
+          }
+          else {
+            minor("IfExistsHere with non-variable");
+            goto iffalse;
+          }
+        case s_IfLess: {
+          double x,y;
+          if (!check_real(0, "IfLess")) x=0;
+          else x=curr_token.value.D;
+          if (!check_real(0, "IfLess")) y=0;
+          else y=curr_token.value.D;
+          if (x<y) { stack_else; goto next; }
+          else goto iffalse; }
+        case s_IfEqual: {
+          Token the_other_token;
+          int yes;
+          if (get_x_token(0)) EOFerr("If");
+          the_other_token=curr_token;
+          if (get_x_token(0)) EOFerr("If");
+          if (curr_token.type!=the_other_token.type) goto iffalse;
+          switch(the_other_token.type) {
+            case t_keyword:
+            case t_colour:
+              yes=(curr_token.value.I==the_other_token.value.I); break;
+            case t_real:
+              yes=(curr_token.value.D==the_other_token.value.D); break;
+            case t_string:
+              yes=!strcmp(curr_token.value.CP,the_other_token.value.CP); break;
+            default:
+              minor("Illegal type in IfEqual"); goto iffalse;
+          }
+          if (yes) { stack_else; goto next; } else goto iffalse; }
+        case s_Else:
+          if (ifs_on_stack<=0) { minor("Else with no If"); goto next; }
+          if (if_stack[--ifs_on_stack]) {
+            /* We were waiting for an Else. Skip. */
+            while (skip_tokens()) minor("One If has two Elses");
+            goto next; }
+          /* We were waiting for an EndIf. Moan. */
+          minor("One If has two Elses"); ++ifs_on_stack;
+          goto next;
+        case s_EndIf:
+          if (--ifs_on_stack<0) { ++ifs_on_stack; minor("EndIf with no If"); }
+          goto next;
+        case s_For: {
+          /* Achtung: this |LoopRecord| doesn't get freed in the event
+           * of error. But since the whole of mkdrawf is one big
+           * memory leak anyway, I don't care.
+           */
+          LoopRecord * l = xmalloc(sizeof(LoopRecord), "a loop record");
+          int localp;	/* non-0 if our var is local not global */
+          int skip=0;	/* non-0 if we find we shouldn't do anything */
+          HashEntry * h = get_variable(0, "a For"); if (!h) goto again;
+          localp = (curr_token.type==t_local);
+          /* The following line looks unsafe (shouldn't we need to
+           * call |set_variable()|?) but it isn't, because by the
+           * time that's an issue we've already set the variable
+           * at least once at this macro level (when initialising
+           * it in what follows here).
+           */
+          l->var = h;
+          /* There are three possibilities now: a new-style
+           * numeric For (in which case the next token should
+           * be <From>), a new-style token-list For (next should
+           * be <In>), or an old-style For (next should be a real).
+           * The code for these three cases merges just after
+           * reading the open-brace of the loop body.
+           */
+          if (check_keyword(     0, "a For", k_From)) {
+            /* This is a new-style numeric For. */
+            if (!require_real(   0, "a For")) goto again;
+            if (localp) set_local(h, &curr_token);
+            else h->value=curr_token;
+            if (!require_keyword(0, "a For", k_To)) goto again;
+            if (!require_real(   0, "a For")) goto again;
+            l->info.N.limit = curr_token.value.D;
+            if (check_keyword(   0, "a For", k_Step)) {
+              if (!require_real( 0, "a For")) goto again;
+              l->info.N.step = curr_token.value.D;
+              /* In the other arm of this conditional we've got
+               * a token pending, so let's even it up.
+               */
+              if (!check_x_token(  0, "a For")) goto again;
+            }
+            else if (!had_error)
+              l->info.N.step = 1.0;
+            else goto again;
+            if (l->info.N.step<0) {
+              l->flags = lr_Numeric+lr_Downwards;
+              if (h->value.value.D < l->info.N.limit) skip=1;
+            }
+            else {
+              l->flags = lr_Numeric;
+              if (h->value.value.D > l->info.N.limit) skip=1;
+            }
+          }
+          else if (check_keyword(1, "a For", k_In)) {
+            /* This is a new-style token-list For. */
+            l->flags = 0;
+            if (get_x_token(1)) {
+              minor("EOF or read error when looking for a tokenlist for a For");
+              goto again;
+            }
+            if (curr_token.type != t_toklist) {
+              minor("I expected to find a tokenlist but found %s (for a For)",
+                    toktype_name(curr_token.type));
+              goto again;
+            }
+            { TwoWords * t = curr_token.value.PP;
+              if (!t) skip=1;
+              else {
+                if (localp) set_local(h, t->P.first.TP);
+                else h->value = *(t->P.first.TP);
+                l->info.T.tokens = t->P.rest.PP;
+              }
+            }
+            /* Finally, get a token pending. */
+            if (!check_x_token(0, "a For")) goto again;
+          }
+          else if (check_real(1, "a For")) {
+            /* This is an old-style numeric For. */
+            l->flags = lr_Numeric;
+            if (localp) set_local(h, &curr_token);
+            else h->value = curr_token;
+            if (!require_real(0, "a For")) goto again;
+            l->info.N.limit = curr_token.value.D;
+            l->info.N.step = 1.0;
+            /* For backward compatibility we may need to change
+             * the limit value. *sigh*. This is a cheap hack and
+             * may not work well for large numbers. But then
+             * nor does old-style For. :-)
+             */
+            { double y = l->info.N.limit - h->value.value.D;
+              if (y==floor(y)) l->info.N.limit -= 0.5;
+            }
+            if (!check_x_token(0, "a For")) goto again;
+          }
+          else {
+            minor("Bizarre token after <For variable>: %s",
+                  toktype_name(curr_token.type));
+            goto again;
+          }
+          /* OK. Now we have just read a token that ought to be
+           * the open-brace of the loop body. Optionally, there
+           * may be a <Do> token in between for readability.
+           */
+          if (curr_token.type==t_keyword && curr_token.value.I==k_Do)
+            if (get_x_token(0)) EOFerr("For");
+          if (curr_token.type!=t_openbr) {
+            minor("Non-tokenlist as body of For");
+          }
+          { int depth=0;
+            TwoWords *p=0,*q;
+            while (1) {
+              if (get_token()) EOFerr("For");
+              if (curr_token.type==t_openbr) ++depth;
+              if (curr_token.type==t_closebr && !depth--) break;
+              { Token *t=new_token(); TwoWords *u=new_pair();
+                *t=curr_token; u->P.first.TP=t;
+                if (p) q=(q->P.rest.PP=u); else q=p=u;
+              }
+            }
+            if (skip) { xfree(l); goto next; }
+            { Token *t=new_token();
+              TwoWords *u=new_pair();
+              l->start=p;
+              t->type=t_magicNEXT; t->value.LP=l;
+              u->P.first.TP=t; u->P.rest.PP=next_token;
+              if (p) q->P.rest.PP=u; else p=u;
+            }
+            next_token=p;
+            goto next;
+          }
+        }
+        /* That's the end of the control-structure specials.
+         * Now we have the more boring ones that might have been
+         * better called operators.
+         * Actually there are a few weirdies yet.
+         */
+        case s_Plus:
+          curr_token.value.D=read_double()+read_double();
+lReturnReal:
+          curr_token.type=t_real;
+          return 0;
+        case s_Minus: {
+          double x=read_double();
+          curr_token.value.D=x-read_double();
+          goto lReturnReal; }
+        case s_Times:
+          curr_token.value.D=read_double()*read_double();
+          goto lReturnReal;
+        case s_Over: {
+          double x=read_double();
+          double y=read_double();
+          if (y==0) { minor("Division by zero"); y=1; }
+          curr_token.value.D=x/y;
+          goto lReturnReal; }
+        case s_ToThe: {
+          double x=read_double();
+          double y=read_double();
+          curr_token.value.D=pow(x,y);
+          goto lReturnReal; }
+        case s_Sqrt: {
+          double x=read_double();
+          if (x<0) { minor("Negative square root"); x=-x; }
+          curr_token.value.D=sqrt(x);
+          goto lReturnReal; }
+        case s_Sin:
+          curr_token.value.D=sin(read_double());
+          goto lReturnReal;
+        case s_Cos:
+          curr_token.value.D=cos(read_double());
+          goto lReturnReal;
+        case s_Tan:
+          curr_token.value.D=tan(read_double());
+          goto lReturnReal;
+        case s_Arcsin:
+          curr_token.value.D=asin(read_double());
+          goto lReturnReal;
+        case s_Arccos:
+          curr_token.value.D=acos(read_double());
+          goto lReturnReal;
+        case s_Arctan:
+          curr_token.value.D=atan(read_double());
+          goto lReturnReal;
+        case s_Arctan2: {
+          double x=read_double();
+          double y=read_double();
+          /* NOTE: the Shared C Library headers and the Shared C Library
+           * itself do not agree about what atan2() does.
+           * The following is correct given what the function actually does.
+           */
+          curr_token.value.D=atan2(y,x);
+          goto lReturnReal; }
+        case s_Floor:
+          curr_token.value.D=floor(read_double());
+          goto lReturnReal;
+        case s_Ceiling:
+          curr_token.value.D=ceil(read_double());
+          goto lReturnReal;
+        case s_Abs:
+          curr_token.value.D=fabs(read_double());
+          goto lReturnReal;
+        case s_Sign:
+          { double x = read_double();
+            if (x<0) curr_token.value.D=-1;
+            else if (x>0) curr_token.value.D=1;
+            else curr_token.value.D=0;
+          }
+          goto lReturnReal;
+        case s_Include:
+          open_new_file(read_string());
+          goto next;
+#ifdef TAGS
+        case s_TagOpen:
+          tag_open(read_string());
+          goto next;
+        case s_TagLookup: {
+          char *s=tag_lookup(read_string());
+          if (!s) { minor("Non-existent tag"); s=""; }	/* copy_string("")? */
+          curr_token.type=t_string;
+          curr_token.value.CP=s;
+          return 0; }
+        case s_TagClose:
+          if (!tags) warn("There isn't an open tagfile");
+          tag_close();
+          goto next;
+#endif
+        case s_Append: {
+          /* This code is inefficient. Tough. */
+          int i,n; char **s; int l=0;
+          n=read_int();
+          if (n<0) { minor("Negative number of strings"); n=0; }
+          s=(char**)xmalloc(n*4,"strings to append");
+          for (i=0;i<n;++i)
+            l+=strlen(s[i]=read_string());
+          curr_token.type=t_string;
+          curr_token.value.CP=(char*)xmalloc(l+1,"appended string");
+          *curr_token.value.CP=0;
+          for (i=0;i<n;++i) strcat(curr_token.value.CP,s[i]);
+          xfree(s);
+          return 0; }
+        case s_GSTrans: {
+          char *s=read_string();
+          int len=2*strlen(s);
+          int t;
+          char *buf=xmalloc(len,"GSTrans-ed string");
+          while ((t=gstrans(s,buf,len))==1) {
+            xfree(buf);
+            buf=xmalloc(len<<=1,"GSTrans-ed string"); }
+          if (t) { minor("Bad string passed to GSTrans"); *buf=0; }
+          curr_token.type=t_string;
+          curr_token.value.CP=copy_string(buf);
+          xfree(buf);
+          return 0; }
+        case s_Font: {
+          char *s=read_string();
+          curr_token.type=t_real;
+          curr_token.value.D=(double)font_number(s);
+          return 0; }
+        case s_Str2Num: {
+          /* this code should be essentially the same as that in
+           * |get_token()|:
+           */
+          char *s=read_string();
+          double d; char *cp;
+          d=strtod(s,&cp);
+          if (*cp && *s=='0' && (s[1]=='x'||s[1]=='X'))
+            d=(double)strtoul(s+2,&cp,16);
+          /* now |*cp==0| iff it was a number */
+          curr_token.type=t_real;
+          if (*cp) minor("Str2Num requires a number");
+          curr_token.value.D=(*cp) ? 0 : d;
+          return 0; }
+        case s_Num2Str: {
+          double d=read_double();
+          char s[40];	/* way more than we need */
+          sprintf(s,"%.10lg",d);
+          /* '-' is not a minus sign; char 153 is */
+          { char *cp=s; while (*cp) { if (*cp=='-') *cp=153; ++cp; } }
+          curr_token.type=t_string;
+          curr_token.value.CP=copy_string(s);
+          return 0; }
+        case s_Random:
+          curr_token.type=t_real;
+          curr_token.value.D=rand()/(((double)RAND_MAX)+1);
+          return 0;
+        case s_Units:
+          unit=read_double();
+          scaling = (unit!=1.0);
+          goto next;
+        case s_Unit:
+          curr_token.type=t_real;
+          curr_token.value.D=unit;
+          return 0;
+        default:
+          error("Unknown `special' token, number=%d",curr_token.value.I);
+      }
+    /* End of the specials. Back to other token types. */
+#undef EOFerr
+#define EOFerr(x) { minor("EOF or error in " x); return 1; }
+    case t_macro: {
+      TwoWords *hh=curr_token.value.PP;
+      TwoWords *new_locals=0;	/* list like { %x 123 %y 565 %1 10 } */
+#define add_local(var) {\
+  Token *t=new_token(); *t=curr_token;\
+  new_locals=cons(var,cons(t,new_locals)); }
+      if (macro_level>=max_macro_level)
+        error("Too many nested macros");
+      n_pps[macro_level+1]=0;	/* set here so can be changed with excess [] */
+      if (get_token()) EOFerr("macro invocation");
+      if (curr_token.type==t_opensq) {
+        TwoWords *p=hh->P.first.PP;
+        while (p) {
+          if (get_x_token(1)) EOFerr("macro invocation");
+          if (curr_token.type==t_closesq) break;
+          add_local(p->P.first.HP);
+          p=p->P.rest.PP;
+        }
+        if (!p) {
+          /* must have fallen out of bottom of loop: more params given.
+           * Treat them as pseudo-positionals with names like %_1 etc.
+           */
+          int k=1; char buf[10]; buf[0]='%'; buf[1]='_';
+          while (1) {
+            if (get_x_token(1)) EOFerr("macro invocation");
+            if (curr_token.type==t_closesq) break;
+            sprintf(buf+2,"%d",k++);
+            add_local(hashloc(buf));
+          }
+        }
+        if (get_token()) goto macro_enter;
+        if (curr_token.type!=t_openbr) {
+          /* Put current token back. This is surely not the best way. */
+          Token *replaced=new_token();
+          TwoWords *node=new_pair();
+          *replaced=curr_token;
+          node->P.first.TP=replaced;
+          node->P.rest.PP=next_token;
+          next_token=node;
+          goto macro_enter;
+        }
+      }
+      else if (curr_token.type!=t_openbr) {
+        warn("Macro invocation without params");
+        goto again; }
+      while (1) {
+        HashEntry *h;
+        if (get_token()) EOFerr("macro invocation");
+        if (curr_token.type==t_closebr) break;
+        if (curr_token.type!=t_local) {
+          minor("Invalid macro parameter");
+          continue; }
+        h=curr_token.value.HP;
+        if (get_x_token(1)) EOFerr("macro invocation");
+        if (curr_token.type==t_closebr) {
+          curr_token=null_token; add_local(h); break; }
+        add_local(h);
+      }
+macro_enter:
+      ++macro_level;
+      { TwoWords *nl=new_locals;
+        while (nl) {
+          HashEntry *h=nl->P.first.HP;
+          nl=nl->P.rest.PP;
+          set_local(h,nl->P.first.TP);
+          free_token(nl->P.first.TP);
+          nl=nl->P.rest.PP;
+        }
+        /* Given the way we actually do freeing, the next bit
+         * is gratuitously inefficient.
+         */
+        nl=new_locals;
+        while (nl) {
+          TwoWords *next=nl->P.rest.PP;
+          free_pair(nl);
+          nl=next;
+        }
+      }
+      macro_context[macro_level].toks_depth=toklists_on_stack;
+      macro_context[macro_level].next_tok=next_token;
+      next_token=hh->P.rest.PP;
+      goto next; }
+    case t_global:
+      curr_token=curr_token.value.HP->value;
+      goto again;
+    case t_local:
+      if (!macro_level) {
+        minor("Local variable reference outside macro");
+        goto next; }
+      curr_token=curr_token.value.HP->value;
+      curr_token.type&=~0xFF000000;	/* remove level indicator */
+      goto again;
+    case t_localP: {
+      int n,m;
+      if (!macro_level) {
+        minor("Positional parameter reference outside macro");
+        goto next; }
+      n=curr_token.value.U;
+      if (n>(m=n_pps[macro_level])) {
+        int od=toklists_on_stack;
+        TwoWords *on=next_token;
+        toklists_on_stack=macro_context[macro_level].toks_depth;
+        next_token=macro_context[macro_level].next_tok;
+        do {
+          if (get_x_token(1))
+            EOFerr("macro invocation (reading pos. param.)");
+          set_local(pp_val+m++,&curr_token);
+        } while (m<n);
+        n_pps[macro_level]=m;
+        macro_context[macro_level].toks_depth=toklists_on_stack;
+        macro_context[macro_level].next_tok=next_token;
+        toklists_on_stack=od;
+        next_token=on;
+      }
+      curr_token=pp_val[n-1].value;
+      curr_token.type&=~0xFF000000;
+      return 0; }
+    case t_openbr:
+      if (seq) {
+        TwoWords *p=0,*q;
+        int depth=0;
+        while (1) {
+          if (get_token()) EOFerr("token list");
+          if (curr_token.type==t_openbr) ++depth;
+          if (curr_token.type==t_closebr && !depth--) break;
+          { Token *t=new_token(); TwoWords *u=new_pair();
+            *t=curr_token; u->P.first.TP=t;
+            if (p) q=(q->P.rest.PP=u); else q=p=u;
+          }
+        }
+        if (p) q->P.rest.PP=0;
+        curr_token.type=t_toklist;
+        curr_token.value.PP=p;
+      }
+      return 0;
+    case t_opensq:
+      minor("Misplaced `['"); /* ] */
+      goto next;
+    case t_closebr:
+    case t_closesq:
+      return 0;
+    case t_unready: {
+      TwoWords * val = curr_token.value.HP->value.value.PP;
+      if (!val) error("Undefined macro <%s>", name(curr_token.value.HP));
+      else {
+        curr_token.type=t_macro;
+        curr_token.value.PP=curr_token.value.HP->value.value.PP;
+      }
+      goto again;
+    }
+    default:
+      minor("Impossible token (type=%d=%s) found during expansion",
+            curr_token.type,toktype_name(curr_token.type));
+      goto next;
+  }
+  error("This can't happen: fall-through in |get_x_token()|");
+  return 1;	/* pacify compiler */
+}
+#undef EOFerr
+
+
+/* -------------------------- scaling -------------------------- */
+
+
+/* Unfortunately, the following need to be visible everywhere because
+ * some scaling happens at one place in stomach.c.
+ */
+
+extern int scaling=0;	/* non-zero iff we are using units other than points */
+extern double unit=1;	/* size of 1 unit, in points */
+
+
+/* -------------------------- automatic variables -------------------------- */
+
+
+/* Not "automatic" as in C. We set some variables at the very start
+ * of the program, because they might be useful.
+ * |set_variable()| is not static, because it's used to set text bbox
+ * variables for Text and XfText objects.
+ */
+
+void set_variable(const char *name, double value) {
+  Token *t=&(hashloc(name)->value);
+  t->type=t_real;
+  t->value.D=value;
+}
+
+
+void init_vars(void) {
+  set_variable("$points",1);
+  set_variable("$inches",72);
+  set_variable("$centimetres",28.3464566929134);
+  set_variable("$millimetres",2.83464566929134);
+  set_variable("$scaledpoints",1.0/640);
+  set_variable("$osunits",72.0/180);
+  set_variable("$pi",3.14159265358979323);
+  set_variable("$2pi",2*3.14159265358979323);
+  set_variable("$pi/2",0.5*3.14159265358979323);
+}
+
+
+/* -------------------------- special readers -------------------------- */
+
+
+/* Each of these functions just reads a single token (with expansion)
+ * and makes sure it's of a suitable type.
+ */
+
+double read_double(void) {
+  if (get_x_token(0)) {
+    minor("EOF or error occurred, looking for a number"); return 0; }
+  if (curr_token.type!=t_real) {
+    curr_token.type=t_real;
+    minor("Wrong type; number expected"); return 0; }
+  return curr_token.value.D;
+}
+
+int read_int(void) {
+  if (get_x_token(0)) {
+    minor("EOF or error occurred, looking for an integer"); return 0; }
+  if (curr_token.type!=t_real) {
+    curr_token.type=t_real;
+    minor("Wrong type; integer expected"); return 0; }
+  { double x=curr_token.value.D;
+    if (x!=floor(x)) minor("Non-integer occurred when integer expected");
+    return (int)x;
+  }
+}
+
+char *read_string(void) {
+  if (get_x_token(0)) {
+    minor("EOF or error occurred, looking for a string"); return ""; }
+  if (curr_token.type!=t_string) {
+    minor("Wrong type; string expected"); return ""; }
+  return curr_token.value.CP;
+}
+
+/* |read_real640()| and |read_real1000()| read real numbers and interpret
+ * them as dimensions, with units of either 1/640pt or 1/1000pt.
+ * |cvt_real640()| and |cvt_real1000()| do the same, but don't actually
+ * read a new token first.
+ */
+
+static int cvt_real640(void) {
+  if (curr_token.type!=t_real) {
+    curr_token.type=t_real;
+    minor("Wrong type; dimension expected"); return 0; }
+  return (int)floor(curr_token.value.D*(scaling?640*unit:640)+.5);
+}
+
+static int cvt_real1000(void) {
+  if (curr_token.type!=t_real) {
+    curr_token.type=t_real;
+    minor("Wrong type; dimension expected"); return 0; }
+  return (int)floor(curr_token.value.D*(scaling?1000*unit:1000)+.5);
+}
+
+int read_real640(void) {
+  if (get_x_token(0)) {
+    minor("EOF or error occurred, looking for a dimension"); return 0; }
+  return cvt_real640();
+}
+
+int read_real1000(void) {
+  if (get_x_token(0)) {
+    minor("EOF or error occurred, looking for a dimension"); return 0; }
+  return cvt_real1000();
+}
+
+/* |read_kwd()| returns the number of the keyword.
+ * |read_kwd_or_cbr()| returns -1 for close-brace (or EOF, with error)
+ */
+
+int read_kwd(void) {
+  if (get_x_token(0)) {
+    minor("EOF or error occurred when keyword expected"); return k_Illegal; }
+  if (curr_token.type!=t_keyword) {
+    minor("Wrong type; keyword expected"); return k_Illegal; }
+  return curr_token.value.U;
+}
+
+int read_kwd_or_cbr(void) {
+  if (get_x_token(0)) {
+    minor("EOF or error occurred when keyword or `}' expected");
+    return -1; }	/* so loops terminate on EOF */
+  /* } */
+  if (curr_token.type==t_closebr) return -1;
+  if (curr_token.type!=t_keyword) {
+    minor("Wrong type: keyword expected"); return k_Illegal; }
+  return curr_token.value.I;
+}
+
+/* |read_openbr()| and |read_closebr()| do just what you might
+ * expect.
+ */
+
+void read_openbr(void) {
+  if (get_x_token(0)) minor("EOF or error occurred when `{' expected");
+  if (curr_token.type!=t_openbr) minor("Wrong type; `{' expected");
+  /* }} */
+}
+
+void read_closebr(void) {
+  /* {{ */
+  if (get_x_token(0)) minor("EOF or error occurred when `}' expected");
+  if (curr_token.type!=t_closebr) minor("Wrong type; `}' expected");
+}
+
+/* |read_colour()| returns an integer representing a colour in the usual
+ * RISC OS way, namely 0xBBGGRR00 or -1 for transparent.
+ */
+int read_colour(void) {
+  if (get_x_token(0)) {
+    minor("EOF or error occurred when colour expected"); return -1; }
+  if (curr_token.type!=t_colour) {
+    int i;
+    if (curr_token.type==t_real
+        && (double)(i=(int)floor(curr_token.value.D))==curr_token.value.D
+        && i>=0 && i<256) {
+      int j,k;
+      if ((j=read_int())>=0 && j<256 &&
+          (k=read_int())>=0 && k<256) return (i<<8)+(j<<16)+(k<<24);
+      minor("Malformed 3-component colour"); return -1; }
+    minor("Wrong type; colour expected"); return -1; }
+  return curr_token.value.U;
+}
+
+
+/* -------------------------- initialising htable -------------------------- */
+
+
+#define insert_key(str,num) { HashEntry *h=hashloc(str);\
+  h->value.type=t_keyword; h->value.value.I=num; }
+
+#define insert_spec(str,num) { HashEntry *h=hashloc(str);\
+  h->value.type=t_special; h->value.value.I=num; }
+
+void init_global_hash(void) {
+  insert_key("header",k_Header);
+  insert_key("fonttable",k_FontTable);
+  insert_key("text",k_Text);
+  insert_key("path",k_Path);
+  insert_key("sprite",k_Sprite);
+  insert_key("group",k_Group);
+  insert_key("tagged",k_Tagged);
+  insert_key("textarea",k_TextArea);
+  insert_key("column",k_Column);
+  insert_key("options",k_Options);
+  insert_key("xftext",k_XfText);
+  insert_key("xfsprite",k_XfSprite);
+  insert_key("version",k_Version);
+  insert_key("creator",k_Creator);
+  insert_key("boundingbox",k_BoundingBox);
+  insert_key("colour",k_Colour);
+  insert_key("background",k_Background);
+  insert_key("style",k_Style);
+  insert_key("size",k_Size);
+  insert_key("startat",k_StartAt);
+  insert_key("fillcolour",k_FillColour);
+  insert_key("outlinecolour",k_OutlineColour);
+  insert_key("width",k_Width);
+  insert_key("move",k_Move);
+  insert_key("close",k_Close);
+  insert_key("line",k_Line);
+  insert_key("curve",k_Curve);
+  insert_key("rmove",k_RMove);
+  insert_key("rline",k_RLine);
+  insert_key("rcurve",k_RCurve);
+  insert_key("arc",k_Arc)
+  insert_key("mitred",k_Mitred);
+  insert_key("round",k_Round);
+  insert_key("bevelled",k_Bevelled);
+  insert_key("endcap",k_EndCap);
+  insert_key("startcap",k_StartCap);
+  insert_key("butt",k_Butt);
+  insert_key("square",k_Square);
+  insert_key("triangular",k_Triangular);
+  insert_key("windingrule",k_WindingRule);
+  insert_key("dash",k_Dash);
+  insert_key("capwidth",k_CapWidth);
+  insert_key("caplength",k_CapLength);
+  insert_key("nonzero",k_NonZero);
+  insert_key("evenodd",k_EvenOdd);
+  insert_key("offset",k_Offset);
+  insert_key("pattern",k_Pattern);
+  insert_key("name",k_Name);
+  insert_key("identifier",k_Identifier);
+  insert_key("otherdata",k_OtherData);
+  insert_key("xtext",k_XText);
+  insert_key("matrix",k_Matrix);
+  insert_key("kerned",k_Kerned);
+  insert_key("righttoleft",k_RightToLeft);
+  insert_key("papersize",k_PaperSize);
+  insert_key("limits",k_Limits);
+  insert_key("grid",k_Grid);
+  insert_key("zoom",k_Zoom);
+  insert_key("notoolbox",k_NoToolbox);
+  insert_key("mode",k_Mode);
+  insert_key("undosize",k_UndoSize);
+  insert_key("shown",k_Shown);
+  insert_key("landscape",k_Landscape);
+  insert_key("nondefault",k_NonDefault);
+  insert_key("spacing",k_Spacing);
+  insert_key("divisions",k_Divisions);
+  insert_key("isometric",k_Isometric);
+  insert_key("autoadjust",k_AutoAdjust);
+  insert_key("lock",k_Lock);
+  insert_key("inches",k_Inches);
+  insert_key("ratio",k_Ratio);
+  insert_key("closedline",k_ClosedLine);
+  insert_key("closedcurve",k_ClosedCurve);
+  insert_key("rectangle",k_Rectangle);
+  insert_key("ellipse",k_Ellipse);
+  insert_key("select",k_Select);
+  insert_key("fromfile",k_FromFile);
+  insert_key("hcentrein",k_HCentreIn);
+  insert_key("centrein",k_CentreIn);
+  insert_key("hcentreon",k_HCentreOn);
+  insert_key("centreat",k_CentreAt);
+  insert_key("virtual",k_Virtual);
+#ifndef NO_JPEG
+  insert_key("jpeg",k_JPEG);
+  insert_key("dpi",k_DPI);
+  insert_key("length",k_Length);
+#endif
+  insert_key("from",k_From);
+  insert_key("to",k_To);
+  insert_key("step",k_Step);
+  insert_key("in",k_In);
+  insert_key("do",k_Do);
+  insert_spec("define",s_Define);
+  insert_spec("set",s_Set);
+  insert_spec("ifexists",s_IfExists);
+  insert_spec("ifless",s_IfLess);
+  insert_spec("ifequal",s_IfEqual);
+  insert_spec("ifexistshere",s_IfExistsHere);
+  insert_spec("else",s_Else);
+  insert_spec("endif",s_EndIf);
+  insert_spec("for",s_For);
+  insert_spec("plus",s_Plus);
+  insert_spec("minus",s_Minus);
+  insert_spec("times",s_Times);
+  insert_spec("over",s_Over);
+  insert_spec("tothe",s_ToThe);
+  insert_spec("sqrt",s_Sqrt);
+  insert_spec("sin",s_Sin);
+  insert_spec("cos",s_Cos);
+  insert_spec("tan",s_Tan);
+  insert_spec("arcsin",s_Arcsin);
+  insert_spec("arccos",s_Arccos);
+  insert_spec("arctan",s_Arctan);
+  insert_spec("arctan2",s_Arctan2);
+  insert_spec("floor",s_Floor);
+  insert_spec("ceiling",s_Ceiling);
+  insert_spec("abs",s_Abs);
+  insert_spec("sign",s_Sign);
+  insert_spec("include",s_Include);
+#ifdef TAGS
+  insert_spec("tagopen",s_TagOpen);
+  insert_spec("taglookup",s_TagLookup);
+  insert_spec("tagclose",s_TagClose);
+#endif
+  insert_spec("append",s_Append);
+  insert_spec("gstrans",s_GSTrans);
+  insert_spec("font",s_Font);
+  insert_spec("str2num",s_Str2Num);
+  insert_spec("num2str",s_Num2Str);
+  insert_spec("random",s_Random);
+  insert_spec("units",s_Units);
+  insert_spec("unit",s_Unit);
+}
+
+
+/* --------------------------  -------------------------- */
+/* --------------------------  -------------------------- */
+/* --------------------------  -------------------------- */
+/* --------------------------  -------------------------- */
+/* --------------------------  -------------------------- */
+/* --------------------------  -------------------------- */

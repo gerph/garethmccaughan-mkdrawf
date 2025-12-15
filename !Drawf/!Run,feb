@@ -1,0 +1,5 @@
+| Run file for test application
+Set Drawf$Dir <Obey$Dir>
+IconSprites <Drawf$Dir>.!Sprites
+WimpSlot -min 44k -max 44k
+Run <Obey$Dir>.!RunImage

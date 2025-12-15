@@ -1,0 +1,1578 @@
+/* stomach.c
+ *
+ * That portion of mkdrawf 3 dealing with what happens to tokens once
+ * they've been expanded as far as possible.
+ *
+ * The mouth/stomach terminology is, I believe, due to Knuth.
+ */
+
+#include <ctype.h>
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "mkdrawf.h"
+
+#ifdef EXPRO
+#include "exprofle.h"
+#endif
+
+/* -------------------------- forward declarations -------------------------- */
+
+
+static void do_object(int);
+
+
+/* -------------------------- buffers -------------------------- */
+
+
+/* The output from this program can get very long, but we don't know
+ * how long. We could do all our memory allocation with a Flex-style
+ * shifting heap, but that would be inefficient: instead we build the
+ * output in a number of 16k buffers, and allocate more of them as
+ * they are needed.
+ *
+ * We never check for overflow past |max_n_buffers|; if you are going
+ * to produce a drawfile larger than 16Mb, you can probably cope with
+ * recompiling.
+ */
+
+#define buffer_size 4096	/* in words, not in bytes */
+#define max_n_buffers 1024
+
+static int *buffers[max_n_buffers];
+static int n_buffers=0;
+
+/* The following function copies a word-aligned block of memory into the
+ * drawfile. It grabs as many new blocks as are needed.
+ * |from| is an honest-to-goodness pointer.
+ * |to| is measured in words from the start of the file.
+ * |size| is measured in words.
+ * This will go wrong if called with silly values. So don't.
+ */
+static void put_block(int *from, uint to, uint size) {
+  uint b0,b1;	/* buffer number */
+  uint a0,a1;	/* offsets within buffers */
+  b0=to/buffer_size; a0=to-b0*buffer_size;
+  b1=(to+size-1)/buffer_size; a1=(to+size)-b1*buffer_size;
+  /* make sure the space exists */
+  while (b1>=n_buffers)
+    buffers[n_buffers++]=(int *)xmalloc(buffer_size*sizeof(Word),"a buffer");
+  if (b1==b0) { memcpy(buffers[b0]+a0,from,size*sizeof(Word)); return; }
+  memcpy(buffers[b0]+a0,from,(buffer_size-a0)*sizeof(Word));
+  memcpy(buffers[b1],from+size-a1,a1*sizeof(Word));
+  from+=buffer_size-a0;
+  /* now we've done both ends. What about the middle? */
+  while (++b0<b1) {
+    memcpy(buffers[b0],from,buffer_size*sizeof(Word));
+    from+=buffer_size;
+  }
+}
+
+/* This performs the inverse operation to that performed by |put_block()|.
+ * |from| is a word offset from start-of-file.
+ * |to| is a pointer.
+ * |size| is in words.
+ * This is used for computing path bboxes; nowhere else.
+ */
+
+#ifndef SLOPPY
+static void get_block(uint from, int *to, uint size) {
+  uint b0,b1;
+  uint a0,a1;
+  b0=from/buffer_size; a0=from-b0*buffer_size;
+  b1=(from+size-1)/buffer_size; a1=(from+size)-b1*buffer_size;
+  /* If space doesn't exist, it's an error */
+  if (b1>=n_buffers) minor("Impossible memory reference");
+  while (b1>=n_buffers)
+    buffers[n_buffers++]=(int *)xmalloc(buffer_size*sizeof(Word),"a buffer");
+  if (b1==b0) { memcpy(to,buffers[b0]+a0,size*sizeof(Word)); return; }
+  memcpy(to,buffers[b0]+a0,(buffer_size-a0)*sizeof(Word));
+  memcpy(to+size-a1,buffers[b1],a1*sizeof(Word));
+  to+=buffer_size-a0;
+  /* now we've done both ends. What about the middle? */
+  while (++b0<b1) {
+    memcpy(to,buffers[b0],buffer_size*sizeof(Word));
+    to+=buffer_size;
+  }
+}
+#endif
+
+/* This is just like |put_block| except that everything's measured in bytes.
+ * It's only used for making font tables.
+ */
+static void put_bytes(char *from, uint to, uint size) {
+  uint b0,b1;
+  uint a0,a1;
+  b0=to/(buffer_size*4); a0=to-b0*(buffer_size*4);
+  b1=(to+size-1)/(buffer_size*4); a1=(to+size)-b1*(buffer_size*4);
+  /* make sure the space exists */
+  while (b1>=n_buffers)
+    buffers[n_buffers++]=(int *)xmalloc(buffer_size*sizeof(Word),"a buffer");
+  if (b1==b0) { memcpy((char*)(buffers[b0])+a0,from,size); return; }
+  memcpy((char*)(buffers[b0])+a0,from,buffer_size-a0);
+  memcpy((char*)(buffers[b1]),from+size-a1,a1);
+  from+=buffer_size*4-a0;
+  /* now we've done both ends. What about the middle? */
+  while (++b0<b1) {
+    memcpy(buffers[b0],from,buffer_size*sizeof(Word));
+    from+=buffer_size*4;
+  }
+}
+
+/* If all you want to do is write one word:
+ */
+static void put_word(int w, int at) {
+  uint a,b;
+  b=at/buffer_size; a=at-b*buffer_size;
+  while (b>=n_buffers)
+    buffers[n_buffers++]=(int *)xmalloc(buffer_size*sizeof(Word),"a buffer");
+  buffers[b][a]=w;
+}
+
+/* One very common operation is writing a single word at the end
+ * of the file-so-far. Here's how we do that:
+ */
+
+static uint curr_addr=0;	/* measured in words from start of file */
+
+static void put_word_at_end(int w) {
+  uint a,b;
+  b=curr_addr/buffer_size; a=curr_addr-b*buffer_size;
+  if (b>=n_buffers)
+    buffers[n_buffers++]=(int *)xmalloc(buffer_size*sizeof(Word),"a buffer");
+  buffers[b][a]=w;
+  ++curr_addr;
+}
+
+/* This is as good a moment as any for introducing |output_file|, which
+ * is just what you think it is.
+ */
+static FILE *output_file=0;
+
+
+/* -------------------------- more readers -------------------------- */
+
+
+/* Sometimes we want to read a whole bounding box, or a transformation
+ * matrix. Here are functions to do those things.
+ */
+
+/* Read a bounding box: x0,y0,x1,y1. |b| should point to `x0'.
+ */
+static void read_bbox(int *b) {
+  b[0]=read_real640();
+  b[1]=read_real640();
+  b[2]=read_real640();
+  b[3]=read_real640();
+}
+
+/* Read a matrix: a,b,c,d,xx,yy. |m| should point to `a'.
+ */
+static void read_matrix(int *m) {
+  m[0]=(int)floor(read_double()*65536+.5);
+  m[1]=(int)floor(read_double()*65536+.5);
+  m[2]=(int)floor(read_double()*65536+.5);
+  m[3]=(int)floor(read_double()*65536+.5);
+  /* Aargh! In all versions prior to 3.10, the next two lines
+   * had |read_real1000()| instead. Oops.
+   */
+  m[4]=read_real640();
+  m[5]=read_real640();
+}
+
+
+/* -------------------------- the font table -------------------------- */
+
+
+/* We remember the names of all fonts used in the drawfile. This makes
+ * it possible to use the Font Manager to compute bounding boxes, and
+ * also makes it possible to build a font table "automatically".
+ *
+ * |fname[i]| is the name of the font that's number |i| in the font table.
+ * NB |fname[0]| is never actually used.
+ */
+static char *fname[256];
+
+/* For those automatic font tables, we need to remember some facts
+ * about what fonts we've seen so far.
+ * The variable |had_ftable| contains 0 initially; 1 after a font table
+ * object has occurred; 2 if an implicit font table is being made.
+ * To make things easier at the end of the program, we also keep track
+ * of the total amount of space we need for the font table, in the
+ * "automatic font table" case.
+ */
+static int had_ftable=0;
+static int ft_size=0;
+
+/* |font_number(s)| returns the number of the font whose name is |s|,
+ * if there is one; otherwise, it allocates a new number, if possible;
+ * otherwise it moans and returns 0 (system font).
+ *
+ * If it allocates a new font, it also updates |ft_size|.
+ */
+int font_number(const char *s) {
+  int i;
+  /* Does it exist already? */
+  for (i=1;i<256;++i)
+    if (fname[i] && cistreq(s,fname[i])) return i;
+  /* Allocate a new one */
+  if (had_ftable==1) {
+    minor("Font name `%s' isn't in the font table",s);
+    return 0; }
+  had_ftable=2;
+  for (i=1;i<256 && fname[i];++i) ;
+  if (i==256) {
+    minor("More than 255 fonts in one drawfile");
+    return 0; }
+  fname[i]=(char*)s;
+  ft_size+=strlen(s)+2;	/* 1 for terminating null, 1 for font number */
+  return i;
+}
+
+/* You should also read the code for |do_ftable()|,
+ * and the bit of |main()| that deals with implicit font tables.
+ */
+
+/* -------------------------- bounding boxes -------------------------- */
+
+
+/* There is a global bounding box. But the variable |global_bounding_box|
+ * doesn't always contain *the* global bbox, because of the way we do
+ * group and tagged objects. (Namely, we make it point somewhere else,
+ * so that the usual routines compute the group/tagged object bbox,
+ * and put it back when we've finished.)
+ * So we do it like this:
+ */
+static int gbgbgb[4]={0x7FFFFFFF,0x7FFFFFFF,0x80000000,0x80000000};
+static int *global_bounding_box=gbgbgb;
+
+/* |update_bbox(h,p)| updates the bbox in the object header at |h|
+ * to make sure it includes the point at |p|.
+ */
+static void update_bbox(int *h, int *p) {
+  int x,y;
+  x=p[0]; y=p[1];
+  if (x<h[2]) h[2]=x;
+  if (y<h[3]) h[3]=y;
+  if (x>h[4]) h[4]=x;
+  if (y>h[5]) h[5]=y;
+}
+
+/* |update_gbbox(h)| updates the global bbox to make sure it includes
+ * everything in the bbox in the object header at |h|.
+ */
+static void update_gbbox(int *h) {
+  if (h[2]<global_bounding_box[0]) global_bounding_box[0]=h[2];
+  if (h[3]<global_bounding_box[1]) global_bounding_box[1]=h[3];
+  if (h[4]>global_bounding_box[2]) global_bounding_box[2]=h[4];
+  if (h[5]>global_bounding_box[3]) global_bounding_box[3]=h[5];
+}
+
+/* The hardest sort of bbox to compute in the first place is that for a
+ * piece of text. Here's a routine that uses various Font_.. SWIs to do
+ * that.
+ * On entry we are guaranteed that n is 0 or a number in 1..255 corresponding
+ * to something in the font table.
+ * NOTE: This doesn't give the same result as !Draw, because !Draw calls
+ *       the (deprecated) Font_StringBBox instead of Font_ScanString.
+ */
+static void compute_text_bbox(int n, char *s, int x, int y, int xs, int ys,
+                              int flags, int *bp, int *matrix) {
+  int hdl=0;
+  int zog[9];
+  if (!s[0]) {	/* empty string -- special case */
+    bp[0]=bp[2]=x; bp[1]=bp[3]=y;
+    return; }
+  if (n) {
+    hdl=findfont(fname[n],(xs+20)/40,(ys+20)/40,0,0);
+    if (!hdl) {
+      warn("I can't find font `%s'; I'm guessing for its bbox",fname[n]);
+    }
+  }
+  if (!hdl) {
+    /* Have to guess. Be pessimistic. */
+    bp[0]=x; bp[1]=y-xs/2;
+    bp[2]=x+xs*strlen(s); bp[3]=y+ys;
+    return;
+  }
+  /* Correct for the fact that the matrix passed in will use
+   * Draw units for its translation, whereas Font_ScanString
+   * wants millipoints. (This was wrong in all versions before
+   * 3.10.)
+   */
+  { int m4,m5;
+    if (matrix) {
+      m4=matrix[4]; m5=matrix[5];
+      matrix[4]=(int)(m4*1.5625); matrix[5]=(int)(m5*1.5625);
+    }
+    stringbbox(hdl,s,zog,flags,matrix);
+    if (matrix) {
+      matrix[4]=m4; matrix[5]=m5;
+    }
+  }
+  losefont(hdl);
+  bp[0]=x+(int)floor(zog[5]*0.64); bp[1]=y+(int)floor(zog[6]*0.64);
+  bp[2]=x+(int)ceil(zog[7]*0.64); bp[3]=y+(int)ceil(zog[8]*0.64);
+}
+
+/* Computing path bboxes accurately is in fact even worse. Fortunately
+ * the OS already has a routine to do that. The following calls it.
+ * |path| should be the file offset (in words) of the start of a
+ * newly constructed path object. |data| should be the file offset
+ * of the start of the path data. |hdr| should point
+ * to the start of the header (beginning with the object type and the
+ * size of the object). |size| should be in words, and should include
+ * all the path data.
+ */
+#ifndef SLOPPY
+static void compute_path_bbox(uint path, uint data, int *hdr, int size) {
+  int *pp;
+  int ugh[4];		/* cap and join specification */
+  int pst=hdr[9];	/* path style word */
+  pp=(int*)xmalloc(size<<2,"path data for Draw_ProcessPath");
+  get_block(path+10,pp,size-10);
+  ugh[0]=(pst&3)+((pst&12)<<6)+((pst&48)<<12);	/* joins & caps */
+  ugh[1]=0xA0000;	/* mitre limit = 10 */
+  ugh[2]=((pst&0xFF0000)>>12)+((pst&0xFF000000)>>4);	/* triangles */
+  ugh[3]=ugh[2];	/* both triangle caps are the same */
+  processpath(
+    pp+(data-path-10),		/* path data */
+    ((pst&64)>>5)+0x70000030,	/* fill style. Sorry */
+    0,			/* no transformation matrix */
+    25,			/* flatness used by !Draw */
+    hdr[8],		/* width */
+    ugh,		/* cap and join */
+    (pst&128)?pp:0,	/* dash specification, if any */
+    (int*)(((int)(hdr+2))+0x80000000)	/* bounding box */
+  );
+  xfree(pp);
+}
+#else
+#define compute_path_bbox(x,y,z)
+#endif
+
+/* If we get an explicit <BoundingBox> keyword in a Group or Tagged
+ * object, we set the local bounding box to the right thing, and then
+ * ignore changes in the "global" bbox thereafter. The easiest way
+ * to do this is to "redirect" the global bbox to a dummy one.
+ * We set it up so that it never has to change; this makes things
+ * slightly faster.
+ */
+static int dummy_bbox[4]={0x80000000,0x80000000,0x7FFFFFFF,0x7FFFFFFF};
+
+
+/* -------------------------- objects -------------------------- */
+
+
+/* The next several sections define functions for reading in and
+ * dealing with object descriptions. The usual pattern is that we
+ * define a structure for the object header and any fixed-size
+ * data in the object, fill it in and use |put_block()|; the
+ * parsing itself is usually a |while|-loop and a switch, which
+ * just grabs successive "items".
+ *
+ * We put new objects at |curr_addr|, and increment it appropriately.
+ * There is often a variable called |p| which contains the value of
+ * |curr_addr| at the start of the object; it's used to compute the
+ * object size.
+ *
+ * Here goes...
+ */
+
+
+/* -------------------------- OBJECT: FontTable -------------------------- */
+
+
+static void do_ftable(void) {
+  double x;
+  char *s;
+  char zog[max_line_length+4];
+  int l;
+  int ignore=0;
+  uint ca;
+  if (had_ftable) {
+    minor("Only one font table is allowed per drawfile");
+    ignore=1; }
+  had_ftable=1;
+  read_openbr();
+  ca=(curr_addr+=2)*4;
+  while (1) {
+    if (get_x_token(0)) { minor("EOF or error in font table"); return; }
+    if (curr_token.type==t_closebr) break;
+    if (curr_token.type!=t_real) { minor("Font number expected"); continue; }
+    x=curr_token.value.D;
+    if (x<1 || x>255 | x!=floor(x)) {
+      minor("Invalid font number");
+      (void)read_string();
+      continue; }
+    s=read_string();
+    fname[(int)x]=s;
+    zog[0]=(char)x;
+    l=strlen(s)+2;
+    memcpy(zog+1,s,l-1);
+    if (!ignore) put_bytes(zog,ca,l);
+    ca+=l;
+    /* The PRMs lie! Entries in the font table are *not* padded to
+     * word boundaries. */
+  }
+  if (!ignore) {
+    ((int*)zog)[0]=0;
+    put_bytes(zog,ca,4-(ca&3));	/* clean up last word */
+    ca=(ca+3)&~3;
+    put_word(0,curr_addr-2);
+    put_word(8+ca-curr_addr*4,curr_addr-1);
+    curr_addr=ca>>2;
+  }
+}
+
+
+/* -------------------------- OBJECT: Text -------------------------- */
+
+
+typedef struct {
+  int ty; int sz;
+  int x0,y0,x1,y1;
+  uint fg,bg,st,xs,ys,xx0,yy0;
+  char tx[max_line_length];
+} txt;
+
+static struct {
+  int a,b,c,d, xx,yy;
+  uint ff, fg,bg,st,xs,ys;
+} text_prev = {
+  65536,0,0,65536, 0,0,
+  0, 0,0xffffff00, 0, 12*640,12*640
+};
+
+static void set_text_bbox_vars(int *bbox) {
+  set_variable("$_x0",bbox[0]/640.0);
+  set_variable("$_y0",bbox[1]/640.0);
+  set_variable("$_x1",bbox[2]/640.0);
+  set_variable("$_y1",bbox[3]/640.0);
+}
+
+static void do_text(void) {
+  txt t={1,52,0,0,0,0,0,0xffffff00,0,7680,7680,0,0,""};
+  char *s=0;
+  int l;
+  int c;
+  int bbg=0;
+  int centred=0;
+  int cx=0,cy=0;	/* coords of centre. =0 just to pacify compiler. */
+  int virt=0;		/* virtual? */
+  memcpy(&t.fg,&text_prev.fg,5*sizeof(int));
+  read_openbr();
+  while (1) {
+    c=read_kwd_or_cbr(); if (c<0) break;
+    else switch(c) {
+      case k_BoundingBox:
+        read_bbox(&t.x0);
+        bbg=1; break;
+      case k_Colour: t.fg=read_colour(); break;
+      case k_Background: t.bg=read_colour(); break;
+      case k_Style: t.st=read_int(); break;
+      case k_Size: t.xs=read_real640();
+                   t.ys=read_real640(); break;
+      case k_StartAt: centred|=4;	/* for checking */
+                      t.xx0=read_real640();
+                      t.yy0=read_real640(); break;
+      case k_Text: s=read_string(); break;
+      case k_HCentreIn: centred|=1; /* fall through: */
+      case k_CentreIn:
+        centred|=2;
+        cx=read_real640(); cy=read_real640();
+        cx=(cx+read_real640())>>1;
+        cy=(cy+read_real640())>>1;
+        break;
+      case k_HCentreOn:
+        centred|=1;
+        cx=(read_real640()+read_real640())>>1; /* order doesn't matter :-) */
+        t.yy0=read_real640();
+        break;
+      case k_CentreAt:
+        centred|=2;
+        cx=read_real640(); cy=read_real640();
+        break;
+      case k_Virtual:
+        virt=1;
+        break;
+      default: minor("Illegal keyword in text object");
+    }
+  }
+  memcpy(&text_prev.fg,&t.fg,5*sizeof(int));
+  if (!s) { minor("No text in text object"); s=""; }
+  l=(strlen(s)>>2)+1;
+  memcpy(t.tx,s,l<<2);
+  t.sz=(l<<2)+52;
+  if (t.st>255 || t.st && !fname[t.st]) {
+    minor("Undeclared font number %d; replacing it with 0",t.st);
+    t.st=0; }
+  if (!bbg) compute_text_bbox(t.st,t.tx,t.xx0,t.yy0,t.xs,t.ys,0,&t.x0,0);
+#ifdef ONLINE_MEDIA
+  /* A text item with explicit bbox, first char '~' and in system font
+   * is a hot spot. Make sure its bbox doesn't get changed (too much)
+   * when it's reloaded into !Draw.
+   * This ghastly hack will be removed when the hotspot object type
+   * is introduced.
+   */
+  if (bbg && s[0]=='~' && t.st==0)
+    t.xs=(t.x1-t.x0)/strlen(t.tx);
+#endif
+  if (centred&3) {
+    int *bb=&t.x0;
+    int q[4];
+    int dx;
+    if ((centred&4) && !(centred&1))
+      warn("StartAt is ignored for centred text");
+    if (bbg) compute_text_bbox(t.st,t.tx,t.xx0,t.yy0,t.xs,t.ys,0,bb=q,0);
+    dx=cx-((bb[0]+bb[2]+1)>>1);
+    t.xx0+=dx; if (!bbg) { t.x0+=dx; t.x1+=dx; }
+    if (!(centred&1)) {
+      int dy=cy-((bb[1]+bb[3]+1)>>1);
+      t.yy0+=dy; if (!bbg) { t.y0+=dy; t.y1+=dy; }
+    }
+  }
+  update_gbbox((int*)&t);
+  set_text_bbox_vars(&t.x0);
+  if (!virt) {
+    put_block((int *)&t,curr_addr,l+13);
+    curr_addr+=l+13;
+  }
+}
+
+
+/* -------------------------- OBJECT: Path -------------------------- */
+
+/* Warning: this is long. It's not all that difficult, but you will
+ * need to be aware of the different types of path element and the
+ * make-up of the path style word, and so on.
+ */
+
+typedef struct {
+  int ty; int sz;
+  int x0,y0,x1,y1;
+  int fc,oc;
+  uint ow,st;
+} pth;
+
+/* If we're calculating path bboxes the Right Way, we don't
+ * need to invoke |update_bbox()| in |do_path()|.
+ */
+#ifndef SLOPPY
+#define update_bbox(x,y)
+#endif
+
+static void do_path() {
+  pth t={2,40,0x7FFFFFFF,0x7FFFFFFF,0x80000000,0x80000000,-1,0,0,66};
+  int p=curr_addr;
+  int dashOK=1;		/* are we allowed a dash spec now? */
+  int c;
+  int q[7];
+  int lx=0,ly=0;
+  int bbg=0;
+  uint qq=p+10;		/* always points to start of path data */
+  curr_addr=qq;		/* points after (initially empty) dash spec */
+  read_openbr();
+  while(1) {
+    c=read_kwd_or_cbr(); if (c<0) break;
+    else switch(c) {
+      case k_BoundingBox:
+        read_bbox(&t.x0);
+        bbg=1; break;
+      case k_FillColour: t.fc=read_colour(); break;
+      case k_OutlineColour: t.oc=read_colour(); break;
+      case k_Width: t.ow=read_real640(); break;
+      case k_Style:
+        read_openbr();
+        while(1) {
+          if (get_x_token(0)) error("EOF or error in path object");
+          if (curr_token.type==t_closebr) break;
+          if (curr_token.type!=t_keyword) {
+            minor("Expected a keyword"); continue; }
+          switch(curr_token.value.U) {
+            case k_Mitred: t.st&=~3; break;
+            case k_Round: t.st=(t.st&~3)|1; break;
+            case k_Bevelled: t.st=(t.st&~3)|2; break;
+            case k_EndCap: switch(read_kwd()) {
+              case k_Butt: t.st&=~12; break;
+              case k_Round: t.st=(t.st&~12)|4; break;
+              case k_Square: t.st=(t.st&~12)|8; break;
+              case k_Triangular: t.st|=12; break;
+              default: minor("Unknown endcap style"); } break;
+            case k_StartCap: switch(read_kwd()) {
+              case k_Butt: t.st&=~48; break;
+              case k_Round: t.st=(t.st&~48)|16; break;
+              case k_Square: t.st=(t.st&~48)|32; break;
+              case k_Triangular: t.st|=48; break;
+              default: minor("Unknown startcap style"); } break;
+            case k_WindingRule: switch(read_kwd()) {
+              case k_NonZero: t.st&=~64; break;
+              case k_EvenOdd: t.st|=64; break;
+              default: minor("Unknown winding rule"); } break;
+            case k_Dash: {
+              uint q=curr_addr, ndash=0;
+              if (!dashOK) { minor("Disallowed Dash"); continue; }
+              read_openbr();
+              put_word_at_end(0); put_word_at_end(0);
+              t.st|=128;
+              while (1) {
+                if (get_x_token(0)) error("EOF or error in dash spec");
+                if (curr_token.type==t_closebr) break;
+                if (curr_token.type==t_keyword) {
+                  if (curr_token.value.U!=k_Offset) {
+                    minor("Illegal keyword in dash spec"); continue; }
+                  put_word(read_real640(),q);
+                  continue; }
+                if (curr_token.type!=t_real) {
+                  minor("Non-number in dash spec"); curr_token.value.D=0; }
+                /* NB: the following is the unique dependency on points
+                 * other than those in |read_real640()|, |read_real1000()|
+                 * and the lexing of explicit dimensions.
+                 * If you make a "millimetres" version, change this.
+                 */
+                put_word_at_end((int)floor(640*unit*curr_token.value.D+.5));
+                ++ndash;
+              }
+              qq=curr_addr;
+              put_word(ndash,q+1); }
+              break;
+            /* I apologise for the slightly Duff-like exploitation
+             * of C's scoping rules that follows. This is actually
+             * quite a useful idiom.
+             */
+            { int shift;
+              double x;
+            case k_CapWidth:
+              shift=16; goto got_shift;
+            case k_CapLength:
+              shift=24; got_shift:
+              if (get_x_token(0)) error("EOF or error in cap info");
+              if (curr_token.type!=t_real) {
+                minor("Non-number in cap info"); curr_token.value.D=0; }
+              if (number_had_dimen) {
+                if (t.ow==0) {
+                  minor("Absolute cap w/l with line width 0 or unknown");
+                  x=0;
+                }
+                else x=16*640.0*curr_token.value.D/t.ow;
+              }
+              else x=curr_token.value.D;
+              if (x<0 || x>255) { minor("Out-of-range cap width/length"); x=0; }
+              { double y = floor(x+.5);
+                if (x!=y && (!number_had_dimen || fabs(x-y)>.001))
+                  minor("Inexact cap width/length (w/16 * %g)", x);
+                t.st = (t.st&~(255<<shift)) | (((int)y)<<shift);
+              }
+              break;
+            }
+            default: minor("Illegal keyword in path style");
+          }
+        }
+        break;	/* end of style processing */
+      case k_Move:
+        dashOK=0;
+        q[0]=2; q[1]=lx=read_real640(); q[2]=ly=read_real640();
+        put_block(q,curr_addr,3); curr_addr+=3;
+        update_bbox((int*)&t,q+1);
+        break;
+      case k_Close:
+        dashOK=0;
+        put_word_at_end(5);
+        break;
+      case k_Line:
+        dashOK=0;
+        q[0]=8; q[1]=lx=read_real640(); q[2]=ly=read_real640();
+        put_block(q,curr_addr,3); curr_addr+=3;
+        update_bbox((int*)&t,q+1);
+        break;
+      case k_Curve:
+        dashOK=0;
+        q[0]=6;
+        q[1]=read_real640(); q[2]=read_real640();
+        q[3]=read_real640(); q[4]=read_real640();
+        q[5]=lx=read_real640(); q[6]=ly=read_real640();
+lAppendCurve:
+        put_block(q,curr_addr,7); curr_addr+=7;
+        update_bbox((int*)&t,q+1);
+        update_bbox((int*)&t,q+3);
+        update_bbox((int*)&t,q+5);
+        break;
+      case k_RMove:
+        dashOK=0;
+        q[0]=2; lx+=read_real640(); ly+=read_real640(); q[1]=lx; q[2]=ly;
+        put_block(q,curr_addr,3); curr_addr+=3;
+        update_bbox((int*)&t,q+1);
+        break;
+      case k_RLine:
+        dashOK=0;
+        q[0]=8; lx+=read_real640(); ly+=read_real640(); q[1]=lx; q[2]=ly;
+        put_block(q,curr_addr,3); curr_addr+=3;
+        update_bbox((int*)&t,q+1);
+        break;
+      case k_RCurve:
+        dashOK=0;
+        q[0]=6;
+        q[1]=lx+read_real640(); q[2]=ly+read_real640();
+        q[3]=lx+read_real640(); q[4]=ly+read_real640();
+        q[5]=lx+read_real640(); q[6]=ly+read_real640(); lx=q[5]; ly=q[6];
+        goto lAppendCurve;
+      case k_Arc:
+        dashOK=0;
+        q[0]=6;
+        { int x0,y0;
+          int dx,dy;
+          double theta, t;
+          x0=read_real640(); y0=read_real640(); theta=read_double();
+          dx=lx-x0; dy=ly-y0;
+          t = (1-cos(theta/2))/(.75*sin(theta/2));
+          /* First control point */
+          q[1]=lx-(int)(t*dy); q[2]=ly+(int)(t*dx);
+          /* Endpoint */
+          { double c=cos(theta), s=sin(theta);
+            q[5]=x0+(int)(c*dx-s*dy); q[6]=y0+(int)(c*dy+s*dx);
+            lx=q[5]; ly=q[6];
+          }
+          /* Second control point */
+          dx=lx-x0; dy=ly-y0;
+          q[3]=lx+(int)(t*dy); q[4]=ly-(int)(t*dx);
+        }
+        goto lAppendCurve;
+      default: minor("Illegal keyword in path object");
+    }
+  }
+  put_word_at_end(0); /* end-of-path marker */
+  t.sz=(curr_addr-p)<<2;
+  if (!bbg) compute_path_bbox(p,qq,(int*)&t,curr_addr-p);
+  update_gbbox((int*)&t);
+  put_block((int*)&t,p,10);
+}
+
+/* Get |update_bbox()| back again for text areas!
+ */
+#ifndef SLOPPY
+#undef update_bbox
+#endif
+
+/* -------------------------- OBJECT: Sprite -------------------------- */
+
+
+/* Before we get started with the |do_sprite()| function, we need
+ * the following. |sprite_from_file(f,s)| searches the sprite file
+ * called |f| for a sprite called |s| and (if it finds one) reads it
+ * into the drawfile.
+ */
+static void sprite_from_file(char *file, char *sprite) {
+  FILE *f=fopen(file,"rb");
+  int ofs,n,t;
+  void *buf;
+  char z[13]; z[12]=0;
+  if (!f) { minor("Sprite file `%s' not found",file); return; }
+  fread(&n,4,1,f);	/* number of sprites */
+  if (n<=0) { minor("No sprites in file `%s'",file); fclose(f); return; }
+  fread(&ofs,4,1,f);	/* offset to first sprite */
+  ofs-=4;		/* correct for absence of size word in file */
+  do {
+    if (fseek(f,ofs,SEEK_SET)) {
+      minor("File `%s' doesn't seem to be a well-formed sprite file",file);
+      fclose(f); return;
+    }
+    fread(&t,4,1,f); ofs+=t; 	/* offset to next sprite */
+    fread(z,1,12,f);	/* sprite name */
+  } while (!cistreq(sprite,z) && (--n>=0));
+  if (n<0) {
+    minor("Sprite `%s' not found in file `%s'",sprite,file);
+    fclose(f); return; }
+  fseek(f,-16,SEEK_CUR);
+  buf=xmalloc(t,"a sprite");
+  if (!fread(buf,t,1,f)) {
+    minor("Something went wrong reading sprite `%s' from file `%s'",
+          sprite,file);
+    fclose(f); return; }
+  put_block((int*)buf,curr_addr,(t+3)>>2); curr_addr+=(t+3)>>2;
+  xfree(buf);
+  fclose(f);
+}
+
+typedef struct {
+  int ty; int sz;
+  int x0,y0,x1,y1;
+} spr;
+
+static void do_sprite(void) {
+  spr t={5,6,0,0,1,1};
+  uint p=curr_addr;
+  int bbg=0;	/* bbox given? */
+  read_openbr();
+  curr_addr+=6;
+  while (1) {
+    if (get_x_token(0)) { minor("EOF or error in sprite object"); return; }
+    if (curr_token.type==t_real) {
+      put_word_at_end((uint)(curr_token.value.D));
+      continue; }
+    else if (curr_token.type==t_keyword) {
+      if (curr_token.value.I==k_BoundingBox) {
+        read_bbox(&t.x0);
+        bbg=1;
+      }
+      else if (curr_token.value.I==k_FromFile) {
+        char *fn,*sn;
+        fn=read_string(); sn=read_string();
+        sprite_from_file(fn,sn);
+      }
+      else minor("Illegal keyword in sprite object");
+    }
+    else {
+      if (curr_token.type!=t_closebr) minor("Illegal token in sprite object");
+      break;
+    }
+  }
+  if (!bbg) warn("Sprite object with no bbox");
+  t.sz=(curr_addr-p)<<2;
+  put_block((int*)&t,p,6);
+}
+
+
+/* -------------------------- OBJECT: Group -------------------------- */
+
+
+/* You should read the stuff about treatment of bboxes in Group and
+ * Tagged objects, in the section on bounding boxes.
+ */
+
+typedef struct {
+  int ty; int sz;
+  int x0,y0,x1,y1;
+  char na[13];	/* 12 really */
+} grp;
+
+static void do_group(void) {
+  grp t={6,36,0x7FFFFFFF,0x7FFFFFFF,0x80000000,0x80000000,"            "};
+  int *old_gbbox;
+  int c;
+  char *s;
+  uint p=curr_addr;
+  old_gbbox=global_bounding_box;
+  global_bounding_box=&t.x0;
+  read_openbr();
+  curr_addr+=9;
+  while (1) {
+    c=read_kwd_or_cbr(); if (c<0) break;
+    else if (c==k_Name) {
+      s=read_string();
+      c=strlen(s); if (c>12) {
+        warn("Overlong group name; truncating to 12c"); c=12; }
+      memcpy(t.na,s,c); }
+    else if (c==k_BoundingBox) {
+      read_bbox(&t.x0);
+      global_bounding_box=dummy_bbox; }
+    else do_object(c);
+  }
+  t.sz=(curr_addr-p)<<2;
+  put_block((int*)&t,p,9);
+  global_bounding_box=old_gbbox;
+  update_gbbox((int*)&t);
+}
+
+
+/* -------------------------- OBJECT: Tagged -------------------------- */
+
+
+/* You should read the stuff about treatment of bboxes in Group and
+ * Tagged objects, in the section on bounding boxes.
+ */
+
+typedef struct {
+  int ty; int sz;
+  int x0,y0,x1,y1;
+  uint id;
+} tgd;
+
+static void do_tagged(void) {
+  tgd t={7,28,0x7FFFFFFF,0x7FFFFFFF,0x80000000,0x80000000,0};
+  int *old_gbbox;
+  int c;
+  int had=0;	/* had the object yet? */
+  uint p=curr_addr;
+  old_gbbox=global_bounding_box;
+  global_bounding_box=&t.x0;
+  read_openbr();
+  curr_addr+=7;
+  while (1) {
+    c=read_kwd_or_cbr(); if (c<0) break;
+    else if (c==k_BoundingBox) {
+      read_bbox(&t.x0);
+      global_bounding_box=dummy_bbox; }
+    else if (c==k_Identifier) t.id=read_int();
+    else if (c==k_OtherData) {
+      if (had) put_word_at_end(read_int());
+      else {
+        minor("OtherData precedes object in Tagged object");
+        (void) read_int(); }
+    }
+    else {
+      if (had) minor("Only one object is allowed in a Tagged object");
+      do_object(c); had=1; }
+  }
+  if (!had) minor("No object in Tagged object");
+  t.sz=(curr_addr-p)<<2;
+  put_block((int*)&t,p,7);
+  global_bounding_box=old_gbbox;
+  update_gbbox((int*)&t);
+}
+
+
+/* -------------------------- OBJECT: TextArea -------------------------- */
+
+
+/* A text area object contains a number of columns. We don't know
+ * how many there are. This program imposes an arbitrary limit of
+ * 16, which should be plenty; if you do need more, just change the
+ * #define below.
+ */
+#define max_text_columns 16
+
+typedef struct {
+  int ty; int sz;
+  int x0,y0,x1,y1;
+} tahdr;	/* this is used for columns as well as for the whole
+		 * text area */
+typedef struct {
+  int zero;
+  int res1,res2;	/* also 0 */
+  uint fg,bg;
+} tar;
+
+/* Evil Fact: |do_textarea| has to get at the actual input line,
+ * because of the syntax for the text in text areas. Believe me,
+ * the alternative is worse.
+ */
+
+static void do_textarea(void) {
+  tar u={0,0,0,0,0xFFFFFF00};
+  char d[1024]; /* arbitrary, integral #words, bigger than max_line_length */
+  int nc=0;	/* number of columns, *excluding* the whole area */
+  int mnc=4;	/* number of columns for which there's space in |t| */
+  tahdr *t = xmalloc(mnc*sizeof(tahdr),"text area column headers");
+  int c;
+  int had=0;	/* any text? */
+  int l,m=0;	/* chars in line,buffer */
+  uint p=curr_addr;
+  read_openbr();
+  t[0].ty=9;
+  t[0].x0=0x7FFFFFFF; t[0].y0=0x7FFFFFFF;
+  t[0].x1=0x80000000; t[0].y1=0x80000000;
+  while (1) {
+    c=read_kwd_or_cbr();
+    if (c<0) break; else switch(c) {
+      case k_Column:
+        if (had) {
+          minor("Misplaced text column");
+          (void)read_real640(); (void)read_real640();
+          (void)read_real640(); (void)read_real640();
+          break; }
+        if (++nc>=mnc) {
+          mnc*=2;
+          t = xrealloc(t,mnc*sizeof(tahdr),"text area column headers");
+        }
+        t[nc].ty=10; t[nc].sz=24;
+        t[nc].x0=read_real640(); t[nc].y0=read_real640();
+        t[nc].x1=read_real640(); t[nc].y1=read_real640();
+        update_bbox((int*)t,&t[nc].x0);
+        update_bbox((int*)t,&t[nc].x1);
+        break;
+      case k_Colour:
+        u.fg=read_colour();
+        break;
+      case k_Background:
+        u.bg=read_colour();
+        break;
+      case k_Text:
+        if (!nc) minor("No columns in text object");
+        had=1;
+        curr_addr+=6*nc+11;
+        read_openbr();
+        while (1) {
+          if (get_line()) { minor("EOF or error in text area text"); return; }
+          c=0; l=0;
+          while(*line_tail&&*line_tail!='\n'&&isspace(*line_tail))
+            ++line_tail;
+          while (line_tail[l]) {
+            if (c) { if (!isspace(line_tail[l])) c=2; }
+            else {
+              if (line_tail[l]=='}') c=1;
+              else if (!isspace(line_tail[l])) c=2; }
+            ++l;
+          }
+          if (c==1) break;	/* just } and whitespace */
+          if (l+m<=1024) { memcpy(d+m,line_tail,l); m+=l; }
+          else {
+            c=1024-m; memcpy(d+m,line_tail,c);
+            put_block((int*)d,curr_addr,256); curr_addr+=256;
+            memcpy(d,line_tail+c,m=l-c);
+          }
+        }
+        if (m==1024) {
+          put_block((int*)d, curr_addr, 255);
+          curr_addr += 256; m=0;
+        }
+        do d[m++]=0; while (m&3);
+        put_block((int*)d,curr_addr,m>>2); curr_addr+=m>>2;
+        read_closebr();
+        break;
+      case k_XText:
+        if (!nc) minor("No columns in text object");
+        had=1;
+        curr_addr+=6*nc+11;
+        if (get_x_token(1)) {
+          minor("EOF or error in text area text");
+          return;
+        }
+        if (curr_token.type != t_toklist) {
+          minor("Didn't find a toklist after XText");
+          return;
+        }
+        { TwoWords * p = curr_token.value.PP;
+          while (p) {
+            if (p->P.first.TP->type != t_string) {
+              minor("Non-string in XText toklist -- ignoring it");
+              p=p->P.rest.PP; continue;
+            }
+            { char * s = p->P.first.TP->value.CP;
+              l=strlen(s);
+              if (l+m+1<=1024) { memcpy(d+m, s, l); d[m+l]='\n'; m+=l+1; }
+              else {
+                c=1024-m; memcpy(d+m, s, c);
+                put_block((int*)d, curr_addr, 256); curr_addr+=256;
+                memcpy(d, s+c, m=l-c); d[m++]='\n';
+              }
+            }
+            p=p->P.rest.PP;
+          }
+        }
+        if (m) {
+          while (m&3) d[m++]=0;
+          put_block((int*)d,curr_addr,m>>2); curr_addr+=m>>2;
+        }
+        break;
+      default: minor("Illegal keyword in text area object"); }
+  }
+  if (!had) minor("No text in text area");
+  update_gbbox((int*)t);
+  t[0].sz=(curr_addr-p)<<2;
+  put_block((int*)t,p,6*(nc+1));
+  put_block((int*)&u,p+6*(nc+1),5);
+}
+
+
+/* -------------------------- OBJECT: Options -------------------------- */
+
+
+typedef struct {
+  int ty,sz;
+  int x0,y0,x1,y1;
+  int ps,pl;	/* paper size, options */
+  double gs; int gd,gt,ga,gn,gl,gu;	/* grid things */
+  int zm,zd,zl;	/* zoom things */
+  int tp;	/* toolbox present? */
+  int em;	/* entry mode */
+  int ub;	/* undo buffer size */
+} opt;
+
+static void do_options(void) {
+  opt t={11,88, 0,0,0,0,
+         0x500,0x100, 1.0,2,0,0,0,0,1, 1,1,0, 1, 128, 5000};
+  int c;
+  read_openbr();
+  while (1) {
+    c=read_kwd_or_cbr(); if (c<0) break; else switch(c) {
+      case k_PaperSize: t.ps=(read_int()+1)<<8; break;
+      case k_Limits:
+        read_openbr();
+        while (1) {
+          c=read_kwd_or_cbr(); if (c<0) break; else switch(c) {
+            case k_Shown: t.pl|=1; break;
+            case k_Landscape: t.pl|=16; break;
+            case k_NonDefault: t.pl&=~256; break;
+            default: minor("Illegal paper-limit option keyword"); }
+        }
+        break;
+      case k_Grid:
+        read_openbr();
+        while (1) {
+          c=read_kwd_or_cbr(); if (c<0) break; else switch(c) {
+            case k_Spacing: t.gs=read_double(); break;
+            case k_Divisions: t.gd=read_int(); break;
+            case k_Isometric: t.gt=1; break;
+            case k_AutoAdjust: t.ga=1; break;
+            case k_Shown: t.gn=1; break;
+            case k_Lock: t.gl=1; break;
+            case k_Inches: t.gu=0; break;
+            default: minor("Illegal grid option keyword"); }
+        }
+        break;
+      case k_Zoom:
+        read_openbr();
+        while (1) {
+          c=read_kwd_or_cbr(); if (c<0) break; else switch(c) {
+            case k_Ratio: t.zm=read_int(); t.zd=read_int(); break;
+            case k_Lock: t.zl=1; break;
+            default: minor("Illegal zoom option keyword"); }
+        }
+        break;
+      case k_NoToolbox: t.tp=0; break;
+      case k_Mode:
+        switch(read_kwd()) {
+          case k_Line: t.em=1; break;
+          case k_ClosedLine: t.em=2; break;
+          case k_Curve: t.em=4; break;
+          case k_ClosedCurve: t.em=8; break;
+          case k_Rectangle: t.em=16; break;
+          case k_Ellipse: t.em=32; break;
+          case k_Text: t.em=64; break;
+          case k_Select: t.em=128; break; }
+        break;
+      case k_UndoSize: t.ub=read_int(); break;
+      default: minor("Illegal keyword in options object");
+    }
+  }
+  put_block((int*)&t,curr_addr,22); curr_addr+=22;
+}
+
+
+/* -------------------------- OBJECT: XfText -------------------------- */
+
+
+typedef struct {
+  int ty,sz;
+  int x0,y0,x1,y1;
+  int a,b,c,d,xx,yy;
+  int ff, fg,bg, st;
+  int xs,ys,xx0,yy0;
+  char tx[max_line_length];
+} xft;
+
+static void do_xftext(void) {
+  xft t={12,80, 0,0,0,0, 65536,0,0,65536, 0,0,
+         0, 0,0xffffff00, 0, 7680,7680, 0,0,""};
+  char *s=0;
+  int l;
+  int c;
+  int had=0;	/* matrix? */
+  int bbg=0;
+  int centred=0;
+  int cx=0,cy=0;	/* coords of centre. =0 just to pacify compiler. */
+  int virt=0;		/* virtual? */
+  read_openbr();
+  memcpy(&t.a,&text_prev.a,12*sizeof(int));
+  while (1) {
+    c=read_kwd_or_cbr(); if (c<0) break;
+    else switch(c) {
+      case k_BoundingBox:
+        read_bbox(&t.x0);
+        bbg=1; break;
+      case k_Colour: t.fg=read_colour(); break;
+      case k_Background: t.bg=read_colour(); break;
+      case k_Style: t.st=read_int(); break;
+      case k_Size: t.xs=read_real640();
+                   t.ys=read_real640(); break;
+      case k_StartAt: centred|=4;
+                      t.xx0=read_real640();
+                      t.yy0=read_real640(); break;
+      case k_Text: s=read_string(); break;
+      case k_Matrix:
+        read_matrix(&t.a);
+        had=1;
+        break;
+      case k_Kerned: t.ff|=1; break;
+      case k_RightToLeft: t.ff|=2; break;
+      case k_HCentreIn: centred|=1; /* fall through: */
+      case k_CentreIn:
+        centred|=2;
+        cx=read_real640(); cy=read_real640();
+        cx=(cx+read_real640())>>1;
+        cy=(cy+read_real640())>>1;
+        break;
+      case k_HCentreOn:
+        centred|=1;
+        cx=(read_real640()+read_real640())>>1; /* order doesn't matter :-) */
+        t.yy0=read_real640();
+        break;
+      case k_CentreAt:
+        centred|=2;
+        cx=read_real640(); cy=read_real640();
+        break;
+      case k_Virtual:
+        virt=1;
+        break;
+      default: minor("Illegal keyword in transformed text object");
+    }
+  }
+  memcpy(&text_prev.a,&t.a,12*sizeof(int));
+  if (!s) { minor("No text in transformed text object"); s=""; }
+  l=(strlen(s)>>2)+1;
+  memcpy(t.tx,s,l<<2);
+  t.sz=(l<<2)+80;
+  if (t.st>255 || t.st && !fname[t.st]) {
+    minor("Undeclared font number %d; replacing it with 0",t.st);
+    t.st=0; }
+  if (!bbg)
+    compute_text_bbox(t.st,t.tx,t.xx0,t.yy0,t.xs,t.ys,t.ff,&t.x0,&t.a);
+  if (centred&3) {
+    int *bb=&t.x0;
+    int q[4];
+    int dx,dy;
+    if (centred&4 && !(centred&1)) warn("StartAt is ignored for centred text");
+    if (bbg) compute_text_bbox(t.st,t.tx,t.xx0,t.yy0,t.xs,t.ys,t.ff,bb=q,&t.a);
+    dx=cx-((bb[0]+bb[2]+1)>>1); dy=cy-((bb[1]+bb[3]+1)>>1);
+    t.xx0+=dx; if (!(centred&1)) t.yy0+=dy;
+    if (!bbg) { t.x0+=dx; t.x1+=dx; if (!(centred&1)) { t.y0+=dy; t.y1+=dy; } }
+  }
+  update_gbbox((int*)&t);
+  set_text_bbox_vars(&t.x0);
+  if (!virt) {
+    put_block((int *)&t,curr_addr,l+20);
+    curr_addr+=l+20;
+  }
+}
+
+
+/* -------------------------- OBJECT: XfSprite -------------------------- */
+
+
+/* |sprite_from_file()| is defined in the "OBJECT: Sprite" section.
+ */
+
+typedef struct {
+  int ty,sz;
+  int x0,y0,x1,y1;
+  int a,b,c,d,xx,yy;
+} xfs;
+
+static void do_xfsprite(void) {
+  xfs t={13,12,0,0,1,1,65536,0,0,65536,0,0};
+  uint p=curr_addr;
+  int bbg=0,mxg=0;
+  read_openbr();
+  curr_addr+=12;
+  while (1) {
+    if (get_x_token(0)) {
+      minor("EOF or error in transformed sprite object"); return; }
+    if (curr_token.type==t_real) {
+      put_word_at_end((uint)(curr_token.value.D));
+      continue; }
+    else if (curr_token.type==t_keyword) {
+      if (curr_token.value.I==k_BoundingBox) {
+        read_bbox(&t.x0);
+        bbg=1;
+      }
+      else if (curr_token.value.I==k_Matrix) {
+        read_matrix(&t.a);
+        mxg=1;
+      }
+      else if (curr_token.value.I==k_FromFile) {
+        char *fn,*sn;
+        fn=read_string(); sn=read_string();
+        sprite_from_file(fn,sn);
+      }
+      else minor("Illegal keyword in transformed sprite object");
+    }
+    else {
+      if (curr_token.type!=t_closebr)
+        minor("Illegal token in transformed sprite object");
+      break;
+    }
+  }
+  if (!bbg) warn("Transformed sprite object with no bbox");
+  if (!mxg) warn("Transformed sprite object with no matrix");
+  t.sz=(curr_addr-p)<<2;
+  put_block((int*)&t,p,12);
+}
+
+
+/* -------------------------- OBJECT: JPEG -------------------------- */
+
+
+/* JPEG object support is optional, because current versions of !Draw
+ * don't understand JPEG objects.
+ */
+#ifndef NO_JPEG
+
+/* Similar to |sprite_from_file()|, but easier:
+ */
+static int jpeg_from_file(char *name) {
+  int l=file_size(name);
+  void *buf;
+  if (l<0) { minor("JPEG file `%s' not found",name); return 0; }
+  buf=xmalloc(l,"the contents of a JPEG file");
+  if (load_file(name,buf)<0) {
+    minor("Something went wrong reading JPEG file `%s'",name);
+    xfree(buf); return 0; }
+  put_block((int*)buf,curr_addr,(l+3)>>2); curr_addr+=(l+3)>>2;
+  xfree(buf);
+  return l;
+}
+
+typedef struct {
+  int ty,sz;
+  int x0,y0,x1,y1;
+  int xs,ys;
+  int dx,dy;
+  int a,b,c,d,xx,yy;
+  int len;
+} jpg;
+
+static void do_jpeg(void) {
+  jpg t={16,17, 0x7FFFFFFF,0x7FFFFFFF,0x80000000,0x80000000, 0,0, 90,90,
+         65536,0,0,65536, 0,0, 0};
+  int bbg=0,szg=0,lng=0,mxg=0;
+  uint p=curr_addr;
+  read_openbr();
+  curr_addr+=17;
+  while (1) {
+    if (get_x_token(0)) { minor("EOF or error in JPEG object"); return;}
+    if (curr_token.type==t_real) {
+      put_word_at_end((unsigned int)(curr_token.value.D));
+      continue; }
+    else if (curr_token.type==t_closebr) break;
+    else if (curr_token.type!=t_keyword) {
+      minor("Illegal token in JPEG object");
+      continue; }
+    else switch(curr_token.value.I) {
+      case k_BoundingBox: read_bbox(&t.x0); bbg=1; break;
+      case k_Size:        t.xs=read_real640(); t.ys=read_real640();
+                          szg=1; break;
+      case k_Matrix:      read_matrix(&t.a); mxg=1; break;
+      case k_FromFile:    t.len=jpeg_from_file(read_string()); lng=1; break;
+      case k_DPI:         t.dx=read_int(); t.dy=read_int(); break;
+      case k_Length:      t.len=read_int(); lng=1; break;
+      default: minor("Illegal keyword in JPEG object");
+    }
+  }
+  if (!bbg && !mxg) warn("JPEG object with neither bbox nor matrix");
+  if (!szg) {
+    warn("JPEG object with size unspecified");
+    t.xs=t.x1-t.x0;
+    t.ys=t.y1-t.y0; }
+  if (!lng) warn("JPEG object with length unspecified");
+  /* As of 3.10, if you don't specify the matrix mkdrawf
+   * works out what it needs to be. Or if you don't specify
+   * the bbox, it works that out.
+   */
+  if (bbg && !mxg) {
+    t.a = (int)floor((t.x1-t.x0)*65536.0 / t.xs + 0.5);
+    t.b = 0;
+    t.c = 0;
+    t.d = (int)floor((t.y1-t.y0)*65536.0 / t.ys + 0.5);
+    t.xx = t.x0;
+    t.yy = t.y0;
+  }
+  if (!bbg) {
+    int p[2];
+    t.x0=t.x1=t.xx; t.y0=t.y1=t.yy;
+    p[0] = t.xx + t.a; p[1] = t.yy + t.b; update_bbox((int*)&t, p);
+    p[0] = t.xx + t.c; p[1] = t.yy + t.d; update_bbox((int*)&t, p);
+    p[0] = t.xx + t.a+t.c; p[1] = t.yy + t.b+t.d; update_bbox((int*)&t, p);
+  }
+  t.sz=(curr_addr-p)<<2;
+  put_block((int*)&t,p,17);
+}
+
+#endif
+
+
+/* -------------------------- Drawfile header -------------------------- */
+
+
+static int hgbb[4];	/* header global bounding box */
+static int hgbbp=0;	/* is there one? */
+
+static void do_header(void) {
+  int c;
+  char id[13]="            ";
+  char *s;
+  read_openbr();
+  while (1) {
+    c=read_kwd_or_cbr(); if (c<0) break; else switch(c) {
+      case k_Version:
+        put_word(read_int(),1);
+        put_word(read_int(),2);
+        break;
+      case k_Creator:
+        s=read_string(); c=strlen(s);
+        if (c>12) { warn("Over-long Creator string; truncating to 12c");
+                    c=12; }
+        memcpy((int*)id,s,c);
+        put_block((int*)id,3,3);
+        break;
+      case k_BoundingBox:
+        read_bbox(hgbb);
+        hgbbp=1;
+        break;
+      default: minor("Illegal keyword in header pseudo-object");
+    }
+  }
+}
+
+
+/* -------------------------- main() -------------------------- */
+
+
+/* Well, first:
+ */
+static void do_object(int k) {
+  switch(k) {
+    case k_FontTable: do_ftable();    break;
+    case k_Text:      do_text();      break;
+    case k_Path:      do_path();      break;
+    case k_Sprite:    do_sprite();    break;
+    case k_Group:     do_group();     break;
+    case k_Tagged:    do_tagged();    break;
+    case k_TextArea:  do_textarea();  break;
+    case k_Options:   do_options();   break;
+    case k_XfText:    do_xftext();    break;
+    case k_XfSprite:  do_xfsprite();  break;
+#ifndef NO_JPEG
+    case k_JPEG:      do_jpeg();      break;
+#endif
+    default: minor("Unknown object type");
+  }
+}
+
+#ifdef DEBUG
+extern int debug=0;
+#endif
+
+int main(int ac, char *av[]) {
+  int i;
+  char q[300];
+  char *output_file_name=0;
+  int minus_v=0;
+  prog_name=*av;
+
+#ifdef EXPRO
+exprofle_init("$.tmp.MDFPROF");
+#endif
+
+  while (++av,--ac) {
+    if (!strcmp(*av,"-v")) {
+      fprintf(stderr,"This is mkdrawf, version " VERSION_STRING ".\n");
+      minus_v=1;
+      continue; }
+    if (!strcmp(*av,"-e")) { no_filenames=1; continue; }
+#ifdef TAGS
+    if (!strcmp(*av,"-t")) {
+      if (!(++av,--ac)) goto bad_syntax;
+      tag_open(*av);
+      continue; }
+#endif
+    if (!strncmp(*av,"-d",2)) {
+#ifdef DEBUG
+      /* Say e.g. -dmemory,xtokens */
+      char * s=*av+2;
+      char * t;
+      while ((t=strtok(s,","))!=0) {
+        if (!strcmp(t,"memory")) debug |= d_memory;
+        else if (!strcmp(t,"tokens")) debug |= d_tokens;
+        else if (!strcmp(t,"0tokens")) debug |= d_0tokens;
+        else if (!strcmp(t,"xtokens")) debug |= d_xtokens;
+        else if (!strcmp(t,"infix")) debug |= d_infix;
+        else if (!strcmp(t,"*")) debug = -1;
+        else fprintf(stderr, "Debugging item <%s> not known.\n", t);
+        s=0;
+      }
+#else
+      fprintf(stderr, "This build of mkdrawf lacks debugging support.\n");
+#endif
+      continue;
+    }
+    if (!input_file_name) { input_file_name=*av; continue; }
+    if (!output_file_name) { output_file_name=*av; continue; }
+bad_syntax:
+    fprintf(stderr,"Usage: %s <infile> <outfile>"
+#ifdef TAGS
+      " [-t <tagfile>]"
+#endif
+      "\n",prog_name);
+    return 0;
+  }
+  if (!output_file_name) {
+    if (minus_v && !input_file_name) return 0;
+    goto bad_syntax; }
+  if (!strcmp(input_file_name,"-")) {
+    input_file_name="<stdin>"; input_file=stdin; }
+  else {
+    input_file=fopen(input_file_name,"r");
+    if (!input_file)
+      error("I couldn't open the input file `%s'",input_file_name);
+  }
+  output_file=fopen(output_file_name,"wb");
+  if (!output_file)
+    error("I couldn't open the output file `%s'",output_file_name);
+  init_global_hash();
+  init_vars();
+  for (i=0;i<256;++i) fname[i]=0;
+  for (i=0;i<max_n_buffers;++i) buffers[i]=0;
+  srand(mono_time());
+  put_word(0x77617244,0);	/* Draw */
+  put_word(201,1); put_word(0,2);	/* version number (of file format) */
+  put_block((int*)"mkdrawf3    ",3,3);
+  curr_addr=10;
+  /* Main loop of program */
+  while (1) {
+    if (get_x_token(0)) break;	/* EOF */
+    if (curr_token.type!=t_keyword) {
+      minor("I expected to find an object type here");
+      continue; }
+    if (curr_token.value.I==k_Header) do_header();
+    else do_object(curr_token.value.I);
+  }
+  if (hgbbp) global_bounding_box=hgbb;
+  put_block(global_bounding_box,6,4);
+  if (had_ftable==2) {
+    /* Implicit font table, not empty */
+    char *ftable=xmalloc(ft_size=(ft_size+11)&~3,"font table");
+    char *ftp=ftable+8;
+    fwrite(buffers[0],4,10,output_file);
+    ((int*)ftable)[0]=0;
+    ((int*)ftable)[1]=ft_size;
+    for (i=1;i<256;++i) if (fname[i]) {
+      char *s=fname[i];
+      *ftp++=i;
+      while((*ftp++=*s++)!=0) ;
+    }
+    while (ftp-ftable<ft_size) *ftp++=0;
+    fwrite(ftable,ft_size,1,output_file);
+    xfree(ftable);
+    /* write out remainder of buffer 0 */
+    if (n_buffers==1)
+      fwrite(buffers[0]+10,4,curr_addr-10,output_file);
+    else
+      fwrite(buffers[0]+10,4,buffer_size-10,output_file);
+  }
+  else {
+    /* write out buffer 0 */
+    if (n_buffers==1)
+      fwrite(buffers[0],4,curr_addr,output_file);
+    else
+      fwrite(buffers[0],4,buffer_size,output_file);
+  }
+  /* now buffer 0 done */
+  if (n_buffers>1) {
+    curr_addr-=buffer_size;
+    for (i=1;i<n_buffers-1;++i) {
+      fwrite(buffers[i],4,buffer_size,output_file);
+      curr_addr-=buffer_size;
+    }
+    if (curr_addr) {
+      if (curr_addr>buffer_size)
+        minor("This can't happen! curr_addr>buffer_sizr");
+      fwrite(buffers[n_buffers-1],4,curr_addr,output_file);
+    }
+  }
+  fclose(output_file);
+  sprintf(q,"SetType %s DrawFile",output_file_name);
+  system(q);
+  return final_report();
+}

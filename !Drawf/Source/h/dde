@@ -1,0 +1,9 @@
+int throwback_start(void);
+int throwback_end(void);
+
+int throwback_filename(const char *name);
+int throwback_error(const char *name, int line, int type,
+                    const char *message);
+int throwback_info(const char *name, int line, const char *message);
+int dde_starttask(int l, char *line);
+int dde_exists(void);

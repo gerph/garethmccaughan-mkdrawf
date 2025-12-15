@@ -1,0 +1,110 @@
+/* tagfile.c
+ *
+ * code for tagfiles in mkdrawf
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "mkdrawf.h"
+
+struct tag;
+typedef struct tag {
+  char *tag;
+  char *value;
+  struct tag *next;
+} tag;
+
+/* |tags| is the head of a linked list of (tag,value) pairs,
+ * or 0 when there are no tags.
+ */
+tag *tags=0;
+
+/* |tag_close()| throws away everything in the |tags| structure, freeing
+ * memory as it goes. It is used when an error occurs in |tag_open()|,
+ * as well as in the more obvious place.
+ */
+void tag_close(void) {
+  while(tags) {
+    free(tags->tag);	/* frees |tags->value| too */
+    tags=tags->next;
+  }
+}
+
+/* |tag_open(s)| tries to open and process the tagfile |s|.
+ * It returns 0 iff it succeeds;
+ * failure may be because
+ *  - a tag file was already open [returns 1]
+ *  - the file couldn't be opened [returns 2]
+ *  - there wasn't enough memory [returns 3]
+ *  - a read error occurred [return 4]
+ *  - there was something wrong with the contents of the file [returns -l,
+ *    where l was the first line at which trouble appeared]
+ *  - something else ... as yet undefined.
+ * I don't actually think I need all this baroque machinery. Never mind.
+ * (In a previous version this didn't issue error messages, so the return
+ * codes were needed.)
+ */
+int tag_open(const char *s) {
+  FILE *f;
+  char line[256],*col;
+  int l,ln=0;
+  char *ss; tag *tt;
+  tag *last=0;
+  if (tags) { minor("A tag file is already open"); return 1; }
+  f=fopen(s,"r");
+  if (!f) { minor("I couldn't open tag file `%s'",s); return 2; }
+  while (fgets(line,256,f)) {
+    ++ln;
+    if (line[0]=='#' || line[0]=='\n' && line[1]==0) continue;	/* comment */
+    l=strlen(line);
+    if (line[l-1]!='\n') {
+      tag_close(); fclose(f);
+      minor("Malformation on line %d of tag file `%s'",ln,s); return -ln; }
+    line[l-1]=0;
+    col=strchr(line,':'); if (!col) {
+      tag_close(); fclose(f);
+      minor("Malformation on line %d of tag file `%s'",ln,s); return -ln; }
+    *col=0;
+    ss=malloc(l+1); if (!ss) {
+      tag_close(); fclose(f);
+      minor("Not enough memory to open tag file `%s'",s); return 3; }
+    tt=malloc(sizeof(tag)); if (!tt) {
+      tag_close(); fclose(f); free(ss);
+      minor("Not enough memory to open tag file `%s'",s); return 3; }
+    memcpy(ss,line,l);
+    tt->tag=ss; tt->value=ss+(col-line+1); tt->next=0;
+    if (tags) { last->next=tt; last=tt; } else last=tags=tt;
+  }
+  if (ferror(f)) {
+    tag_close(); fclose(f);
+    minor("Error while reading tag file `%s'",s); return 4; }
+  fclose(f);
+  tt=tags;
+  return 0;
+}
+
+/* |tag_lookup(s)| is the |value| field of the first tag item whose |tag| field
+ * matches |s|.
+ * However, |s| can specify a default: if it has the form "blah:foo" then
+ * the matching uses "blah", and if it fails the function will return "foo".
+ * For the moment, "matches" means "compares equal to". This will change.
+ * If nothing matches and there is no default, NULL is returned.
+ * When |tag_lookup()| returns a string, it is always newly allocated
+ * using |copy_string()|.
+ */
+#define matches !strcmp
+char *tag_lookup(const char *s) {
+  tag *t=tags;
+  char *col=strchr(s,':');
+  if (col) *col=0;
+  while (t) {
+    if (matches(s,t->tag)) {
+      if (col) *col=':';
+      return copy_string(t->value); }
+    t=t->next;
+  }
+  if (col) { *col=':'; return copy_string(col+1); }
+  return 0;
+}

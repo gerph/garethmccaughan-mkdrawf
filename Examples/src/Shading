@@ -1,0 +1,72 @@
+# Shading, using the 3-integer representation of colours.
+# The drawfile this produces looks pretty wretched in modes with
+# 256 or fewer colours. It looks *really* wretched in 16-colour
+# modes. Sorry.
+# Incidentally, running this through mkdrawf takes just under 10s
+# on my machine.
+
+# A rectangle shading from blue to red.
+
+Group {
+  For $x 0 256 {
+    Path {
+      OutlineColour None
+      FillColour $x 0 Minus 255 $x
+      Move Plus $x 100 100
+      RLine 1 0
+      RLine 0 100
+      RLine -1 0
+      Close
+    }
+  }
+}
+
+# A circular thingy. Very pretty.
+
+Set $2Pi 6.28318530717959
+Set $Factor Over $2Pi 768
+Set $r0 100
+Set $r1 200
+Set $x0 300
+Set $y0 300
+
+Define Ppp {
+  Path {
+    OutlineColour None
+    IfLess $x 256
+      FillColour $x Minus 255 $x 0
+    Else IfLess $x 512
+      FillColour Minus 511 $x 0 Minus $x 256
+    Else
+      FillColour 0 Minus $x 512 Minus 767 $x
+    EndIf EndIf
+    Set %c Cos Times $x $Factor
+    Set %s Sin Times $x $Factor
+    Set %cc Cos Times Plus $x 1 $Factor
+    Set %ss Sin Times Plus $x 1 $Factor
+    Move Plus $x0 Times %c $r0 Plus $y0 Times %s $r0
+    Line Plus $x0 Times %cc $r0 Plus $y0 Times %ss $r0
+    Line Plus $x0 Times %cc $r1 Plus $y0 Times %ss $r1
+    Line Plus $x0 Times %c $r1 Plus $y0 Times %s $r1
+    Close
+  }
+}
+
+Group {
+  For $x 0 768 { Ppp { } }
+}
+
+# Some daft text.
+
+Group {
+  For $x 0 16 {
+    Set $u Minus 255 Times $x 17
+    Text {
+      Style Font "Trinity.Bold"
+      Size 80 100
+      Colour $u $u $u
+      StartAt Minus 300 $x Plus 150 $x
+      Text "This is silly."
+    }
+  }
+}

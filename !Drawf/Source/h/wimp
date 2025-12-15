@@ -1,0 +1,195 @@
+#ifndef _inc__wimp
+#define _inc__wimp
+
+enum {
+  err_OKbox=1,		err_Cancelbox=2,
+  err_hlCancel=4,	err_noprompt=8,
+  err_noErrorFrom=16,	err_returnatonce=32,
+  err_force=64,		err_nobeep=128
+};
+
+enum {
+  reason_null=0,	reason_redraw=1,
+  reason_open=2,	reason_close=3,
+  reason_ptr_leaving=4,	reason_ptr_entering=5,
+  reason_click=6,	reason_dragbox=7,
+  reason_key=8,		reason_menu=9,
+  reason_scroll=10,	reason_losecaret=11,
+  reason_gaincaret=12,	reason_pw_non0=13,
+  reason_message=17,	reason_message_rec=18,
+  reason_message_ack=19
+};
+
+enum {
+  mask_null=1,		mask_redraw=2,
+  mask_ptr_leaving=16,	mask_ptr_entering=32,
+  mask_click=64,	mask_key=256,
+  mask_losecaret=1<<11,	mask_gaincaret=1<<12,
+  mask_pw_non0=1<<13,	mask_message=1<<17,
+  mask_message_rec=1<<18,
+  mask_message_ack=1<<19,
+  mask_pw_highpriority=1<<23,
+  mask_preserve_fpregs=1<<24
+};
+
+typedef unsigned int uint;
+
+typedef struct {
+  int num;
+  char str[252];
+} error_block;
+
+typedef struct {
+  int num;
+  char str[56];
+} short_error_block;
+
+#define err_block(N) struct { int num; char str[N]; }
+
+typedef struct {
+  int x0; int y0;
+  int x1; int y1;
+} Box;
+
+typedef struct {
+  int x; int y;
+} Pair;
+
+typedef union {
+  int val;
+  struct {
+    uint text    : 1;
+    uint sprite  : 1;
+    uint border  : 1;
+    uint hcentre : 1;
+    uint vcentre : 1;
+    uint filled  : 1;
+    uint antialiased : 1;
+    uint needshelp   : 1;
+    uint indirected  : 1;
+    uint rjustify    : 1;
+    uint multiple    : 1;	/* Adjust, don't cancel others in ESG */
+    uint halfsize    : 1;
+    uint buttontype  : 4;
+    uint ESG     : 5;
+    uint selected    : 1;
+    uint shaded  : 1;
+    uint deleted : 1;
+    uint fg : 4;	/* this & bg combine to form a font number sometimes */
+    uint bg : 4;
+  } bits;
+} Icon_flags;
+
+typedef union {
+  char text[12];
+  char name[12];
+  struct id_text {
+    char *text;
+    char *valid;
+    uint length; } indtext;
+  struct id_sprite {
+    char *name;	/* or may be pointer to sprite itself */
+    int *area;
+    int length; } indsprite;
+} Icon_data;
+
+typedef struct {
+  Box bbox;
+  Icon_flags flags;
+  Icon_data data;
+} Icon_block;
+
+typedef struct {
+  int window;
+  Icon_block block;
+} Icon_info;	/* this is what's needed by Wimp_CreateIcon */
+
+typedef struct {
+  union {
+    int val;
+    struct {
+      uint ticked    : 1;
+      uint ruleafter : 1;
+      uint writable  : 1;
+      uint message   : 1;
+      uint greyopen  : 1;
+      uint zog1      : 2;
+      uint last      : 1;
+      uint indirect  : 1;
+      uint zog2      : 23; } bits; } flags;
+  union {
+    int window;
+    struct menu_block *submenu;   } leads_to;
+  Icon_flags                        icon_flags;
+  Icon_data                         icon_data;
+} Menu_item;
+
+typedef struct menu_block {
+  Icon_data title;
+  char titlefg,titlebg,fg,bg;
+  int width,height,gap;
+  Menu_item items[1];	/* of course there will usually be more than 1 */
+} Menu_block;
+
+#define mblock(N) struct {\
+  Icon_data title;\
+  char titlefg,titlebg,fg,bg;\
+  int width,height,gap;\
+  Menu_item items[N]; }
+
+/* From s.wimp1: */
+extern int (*wimpfns[20])(int,int*);
+extern int task_handle, last_reason;
+int wimp_poll(int mask);
+int wimp_poll22(int mask, int *pollwordp);
+int wimp_pollidle(int mask, int time);
+int wimp_pollidle22(int mask, int time, int *pollwordp);
+int wimp_redrawwindow(int *block);
+int wimp_getrectangle(int *block);
+int wimp_openwindow(int *block);
+int wimp_closewindow(int *block);
+int wimp_processkey(int keycode);
+int wimp_initialise(int lastvsn, const char *desc, const int *msgs);
+int wimp_createwindow(int *block);
+void wimp_closedown(void);
+int wimp_reporterror(const void *block, int flags, const char *appname);
+/* first arg really error_block. Hack to allow short error blocks. */
+void wimp_createmenu(Menu_block *block, int x, int y);
+void wimp_closemenu(void);
+
+/* From s.wimp2: */
+int wimp_opentemplate(const char *filename);
+void wimp_closetemplate(void);
+int wimp_xtemplate(const char *name, int *sizep, int *indsizep,
+                   int index, char **namep);
+int wimp_loadtemplate(const char *name, void *buffer, void *indirect,
+                      int indsize, char *fonts, int index, char **namep);
+
+/* From s.wimp3: */
+int wimp_createicon(int priority, Icon_info *icon_info);
+int wimp_deleteicon(int window, int icon);
+Icon_block *wimp_geticonstate(int window, int icon);
+void wimp_seticonstate(int window, int icon, int eor, int clear);
+
+/* From s.wimp4: */
+int wimp_sendmessage(int reason, int *block, int handle);
+int wimp_sendmessage4(int reason, int *block, int window, int icon);
+int wimp_starttask(const char *cmd);
+
+/* From s.wimp5: */
+void begin_drag(int window, Icon_block *block);
+void end_drag(void);
+void wimp_getpointerinfo(int *block);
+
+/* From s.wimp6: */
+void wimp_getwindowinfo(int *block);
+
+/* From s.wimp7: */
+void wimp_getmenustate0(int *block);
+
+/* From s.hglass: */
+void hourglass_on(void);
+void hourglass_off(void);
+void hourglass_start(int delay);
+
+#endif

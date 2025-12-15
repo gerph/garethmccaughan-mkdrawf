@@ -1,0 +1,26 @@
+TextArea {
+  Column 100 400 200 500
+  Column 220 400 320 500
+  Colour r0g0b0
+  Text {
+    \! 1
+    \F 1 Trinity.Medium.Italic 12
+    \F 2 Trinity.Medium 12
+    \1
+    \AD
+    \D2
+    \L12
+    This is some text I'm putting in a text area.
+    I have no idea how it will look, nor indeed whether
+    it will work at all. For all I know \2mkdrawf\1 will
+    just choke utterly on it, or corrupt my file, or
+    cause demons to fly out of the monitor.
+    This should be a new paragraph; it will still be
+    in italics. \2 Now we should be in roman type.
+    (Isn't this fun, boys and girls?)
+
+    Apparently the 1998 World Cup will be decided,
+    in the event of a draw, by a sudden-death playoff
+    instead of by a penalty shootout. How interesting.
+  }
+}

@@ -1,0 +1,25 @@
+/* compute intersection of two lines */
+
+#include <stdio.h>
+
+int main(int argc, char *argv[]) {
+  double x00,y00,x01,y01,x10,y10,x11,y11;
+  double d,e,dd,ee,t;
+  if (argc!=9) {
+    fprintf(stderr,"Usage: %s x00 y00 x01 y01 x10 y10 x11 y11\n",argv[0]);
+    return 0;
+  }
+  sscanf(argv[1],"%lf",&x00);
+  sscanf(argv[2],"%lf",&y00);
+  sscanf(argv[3],"%lf",&x01);
+  sscanf(argv[4],"%lf",&y01);
+  sscanf(argv[5],"%lf",&x10);
+  sscanf(argv[6],"%lf",&y10);
+  sscanf(argv[7],"%lf",&x11);
+  sscanf(argv[8],"%lf",&y11);
+  d=x01-x00; e=y01-y00;
+  dd=x11-x10; ee=y11-y10;
+  t=(dd*(y00-y10)-ee*(x00-x10))/(ee*d-dd*e);
+  printf("%lg %lg\n",x00+t*d,y00+t*e);
+  return 0;
+}

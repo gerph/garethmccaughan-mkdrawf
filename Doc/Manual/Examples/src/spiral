@@ -1,0 +1,17 @@
+( $conv := $2pi / 360 )
+define Spiral {
+  ( ( %theta := 0  %r := %dr ) )
+  For %i from 0 to ( %n - 0.5 ) {
+    RLine ( %r * cos ( $conv * %theta ) )
+          ( %r * sin ( $conv * %theta ) )
+    ( ( %r := %r + %dr  %theta := %theta + %dt ) )
+    IfLess 360 %theta
+      ( %theta := %theta - 360 )
+    EndIf
+  }
+}
+Path {
+  Outlinecolour r0g0b0  Width 0
+  Move 250 250
+  Spiral { %dr .5 %dt 65 %n 500 }
+}

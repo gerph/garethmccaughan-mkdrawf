@@ -1,0 +1,67 @@
+#!<perl$dir>.perl
+
+# Rearrange a text-form manual created by "makemanual" so that
+# it looks slightly nicer.
+
+$infile_name = $ARGV[0];
+open IN, '<'.$infile_name or die "! I couldn't open $infile_name.\n";
+
+print <<END;
+,--------------------------------------------------------------------------.
+|                                                                          |
+|                               mkdrawf:                                   |
+|                                                                          |
+|                     A tool for creating drawfiles                        |
+|                                                                          |
+`--------------------------------------------------------------------------'
+
+
+END
+
+while (<IN>) {
+  last if /^\s*Contents\s*$/;
+}
+print;
+
+while (<IN>) {
+  last if /^\s*Contents\s*$/;
+  print;
+}
+
+print <<END;
+
+----------------------------------------------------------------------------
+
+END
+
+seek(IN, 0, 0) or die "! I couldn't seek in the input file.\n";
+
+while (<IN>) {
+  last if /^\s*Contents\s*$/;
+  print;
+}
+
+print <<END;
+
+----------------------------------------------------------------------------
+
+
+END
+
+while (<IN>) {
+  last if /^\s*Contents\s*$/;
+}
+
+while (<IN>) {
+  last unless /^\s*$/;
+}
+print;
+
+while (<IN>) {
+  print;
+}
+
+print <<END;
+
+----------------------------------------------------------------------------
+END

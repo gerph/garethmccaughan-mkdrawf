@@ -1,0 +1,43 @@
+# How easy it is, now, to produce circular arcs!
+
+define circle_elems [ %x %y %r ] {
+  move ( ( %x + %r %y ) )
+  arc %x %y $pi/2
+  arc %x %y $pi/2
+  arc %x %y $pi/2
+  arc %x %y $pi/2
+  close
+}
+
+# Filled circle at (200,200), radius 50.
+
+path {
+  outlinecolour none
+  fillcolour wimp_red
+  circle_elems [ 200 200 50 ]
+}
+
+# Open circle there, radius 100.
+path {
+  outlinecolour black
+  fillcolour none
+  circle_elems [ 200 200 100 ]
+}
+
+# Box with rounded corners.
+
+define rbox_elems [ %x0 %y0 %x1 %y1 %r ] {
+  move ( ( %x1 - %r  %y0             ) )
+  arc  ( ( %x1 - %r  %y0 + %r  $pi/2 ) )
+  line ( ( %x1       %y1 - %r        ) )
+  arc  ( ( %x1 - %r  %y1 - %r  $pi/2 ) )
+  line ( ( %x0 + %r  %y1             ) )
+  arc  ( ( %x0 + %r  %y1 - %r  $pi/2 ) )
+  line ( ( %x0       %y0 + %r        ) )
+  arc  ( ( %x0 + %r  %y0 + %r  $pi/2 ) )
+  close
+}
+
+# Lower box has sharper corners.
+path { width 1 rbox_elems [ 300 600 400 700 40 ] }
+path { width 3 rbox_elems [ 300 300 400 500 20 ] }

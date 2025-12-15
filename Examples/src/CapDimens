@@ -1,0 +1,29 @@
+# Test of "friendly" handling of cap length/width values
+# with explicitly-given units.
+
+( $x := 8pt )
+( $y := 4pt )
+
+# Explicit dimensions. Should work fine.
+path {
+  width 4pt
+  style { endcap triangular capwidth 8pt caplength 20pt }
+  move 100 600 line 300 600
+}
+
+# Dimensions in 16ths of line width.
+path {
+  width 4pt
+  style { endcap triangular capwidth 32 caplength 80 }
+  move 100 500 line 300 500
+}
+
+# Dimensions using explicit variables.
+# Shouldn't work if last real before is not a dimen.
+# This will actually produce width=2pt, length=1pt.
+path {
+  width 4pt
+  outlinecolour 0 0 0
+  style { endcap triangular capwidth $x caplength $y }
+  move 100 400 line 300 400
+}

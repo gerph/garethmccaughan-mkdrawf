@@ -1,0 +1,170 @@
+/* make an icosahedron
+ *
+ * The Clever Fact is: you can make a dodecahedron by starting with a cube
+ * and putting a "tent" on top of each face. The tent needs to have "height"
+ * (root5-1)/2, and "offset" the square of that.
+ *
+ * And the icosahedron is the dual of the dodecahedron.
+ * This program is very similar to dodec.c .
+ */
+
+#include <math.h>
+#include <stdio.h>
+
+#define HEIGHT	0.61803398875
+#define OFFSET	0.38196601125	/* HEIGHT^2 */
+#define BIG	(1+HEIGHT)
+#define SMALL	(1-OFFSET)
+
+double DISTANCE=10;
+/*#define DISTANCE 10*/
+
+#define FACES 12
+
+#undef LABEL
+
+typedef double point[3];
+
+/* vertices of dodecahedron */
+point v[20] = {
+	/* vertices of cube */
+  { -1,-1,-1 },	/* 0 */
+  { -1,-1, 1 },	/* 1 */
+  { -1, 1,-1 },	/* 2 */
+  { -1, 1, 1 },	/* 3 */
+  {  1,-1,-1 },	/* 4 */
+  {  1,-1, 1 },	/* 5 */
+  {  1, 1,-1 },	/* 6 */
+  {  1, 1, 1 },	/* 7 */
+  { -SMALL, 0, -BIG },	/* 8 */
+  {  SMALL, 0, -BIG },	/* 9 */
+  { -SMALL, 0,  BIG },	/* 10 */
+  {  SMALL, 0,  BIG },	/* 11 */
+  { 0, -BIG, -SMALL },	/* 12 */
+  { 0, -BIG,  SMALL },	/* 13 */
+  { 0,  BIG, -SMALL },	/* 14 */
+  { 0,  BIG,  SMALL },	/* 15 */
+  { -BIG, -SMALL, 0 },	/* 16 */
+  { -BIG,  SMALL, 0 },	/* 17 */
+  {  BIG, -SMALL, 0 },	/* 18 */
+  {  BIG,  SMALL, 0 },	/* 19 */
+};
+
+/* faces of dodecahedron */
+/* this is an arbitrary order */
+int faces[FACES][5] = {
+  {0,12,13,1,16},
+  {4,12,13,5,18},
+  {0,16,17,2,8},
+  {6,9,4,18,19},
+  {0,8,9,4,12},
+  {2,14,6,9,8},
+  {1,13,5,11,10},
+  {3,10,11,7,15},
+  {1,10,3,17,16},
+  {5,18,19,7,11},
+  {2,17,3,15,14},
+  {6,14,15,7,19}
+};
+
+/* will contain vertices of icosahedron */
+point w[12];
+
+/* transformed vertices of icosahedron: */
+point ww[12];
+
+/* will contain faces of icosahedron */
+int f[20][3];
+int nv[20];	/* how many vertices of this face so far? */
+
+/* output vertex w[n], converted to 2d */
+void wrvx(int plotcode, int n) {
+  double x=(DISTANCE-1)*100*ww[n][0]/(ww[n][2]+DISTANCE)+200,
+         y=(DISTANCE-1)*100*ww[n][1]/(ww[n][2]+DISTANCE)+200;
+  plot(plotcode,(int)(6*x),(int)(6*y));
+}
+
+/* output points for face f[n] */
+void facepath(int n) {
+  int i;
+  wrvx(4,f[n][0]);	/* move */
+  wrvx(5,f[n][1]);
+  wrvx(5,f[n][2]);
+  wrvx(5,f[n][0]);
+}
+
+/* is face n visible from 0,0,-5 ? */
+int visible(int n) {
+  double x=0,y=0,z=0;
+  int i;
+  for (i=0;i<3;++i) {
+    x+=ww[f[n][i]][0];
+    y+=ww[f[n][i]][1];
+    z+=ww[f[n][i]][2];
+  }
+  x/=3; y/=3; z/=3;
+  return (x*x+y*y+(z+DISTANCE)*z<0);
+}
+
+#define pi 3.141592653589793
+#define F (pi/180)
+
+int main(int ac, char *av[]) {
+  int i;
+  double ax=0,ay=0,az=0;
+	/* set up vertex and face arrays for icos from those for dodec */
+  { double x,y,z; int j; int n;
+    for (i=0;i<12;++i) {
+      x=0; y=0; z=0;
+      for (j=0;j<5;++j) {
+        n=faces[i][j];
+        x+=v[n][0];
+        y+=v[n][1];
+        z+=v[n][2];
+        f[n][nv[n]++]=i;
+      }
+      w[i][0]=x/5; w[i][1]=y/5; w[i][2]=z/5;
+    }
+  }
+
+  while (1) {
+
+    int ch=chr_in();
+    switch(ch) {
+      case 'q': ax-=1; break; case 'Q': ax-=5; break;
+      case 'w': ax+=1; break; case 'W': ax+=5; break;
+      case 'a': ay-=1; break; case 'A': ay-=5; break;
+      case 's': ay+=1; break; case 'S': ay+=5; break;
+      case 'z': az-=1; break; case 'Z': az-=5; break;
+      case 'x': az+=1; break; case 'X': az+=5; break;
+      case ',': DISTANCE-=1; break;
+      case '.': DISTANCE+=1; break;
+    }
+    if (DISTANCE<2) DISTANCE=2;
+    chr_out(12); printf("%lg %lg %lg @%lg\n",ax,ay,az,DISTANCE);
+
+    { double cx=cos(F*ax),sx=sin(F*ax),
+             cy=cos(F*ay),sy=sin(F*ay),
+             cz=cos(F*az),sz=sin(F*az);
+      double t,x,y,z;
+      for (i=0;i<12;++i) {
+        x=w[i][0]; y=w[i][1]; z=w[i][2];
+        t=x; x=x*cz-y*sz; y=t*sz+y*cz;
+        t=x; x=x*cy-z*sy; z=t*sy+z*cy;
+        t=y; y=y*cx-z*sx; z=t*sx+z*cx;
+        ww[i][0]=x; ww[i][1]=y; ww[i][2]=z;
+      }
+    }
+    gcol(1);
+    for (i=0;i<20;++i){
+      if (!visible(i)) facepath(i);
+    }
+    gcol(7);
+    for (i=0;i<20;++i) {
+      if (visible(i)) facepath(i);
+    }
+
+  }
+
+  return 0;
+}

@@ -1,0 +1,30 @@
+# Implicit font table: fonts are noticed as they occur
+
+Text {
+  StartAt 100 200
+  Size 20 20
+  Style Font "Trinity.Medium"
+  Text "Trinity"
+}
+
+Text {
+  StartAt 100 180
+  Size 10 15
+  Style Font "Trinity.Medium.Italic"
+  Text "Trinity Italic"
+}
+
+Text {
+  StartAt 100 160
+  Size 20 15
+  Style Font "Homerton.Medium.Oblique"
+  Text "Homerton Oblique"
+}
+
+XfText {
+  StartAt 300 300
+  Size 20 20
+  Matrix  0.5 -0.3 0.3 0.8  0 0   # random, basically
+  Style Font "Homerton.Bold"
+  Text "Homerton Bold"
+}

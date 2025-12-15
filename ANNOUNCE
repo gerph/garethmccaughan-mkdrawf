@@ -1,0 +1,31 @@
+Release 3.10 of "mkdrawf", my tool for creating drawfiles,
+is now available. It's enormously better than the previous
+released version; the main changes are:
+
+  - Syntactic improvements:                                 _
+      - The ability to write expressions in infix notation   \___
+      - *Sensible* passing of parameters to macros          _/   `.
+      - A much nicer For loop syntax (two, even!)                 |
+      - Symbolic names for common colours                         |
+  - Semantic improvements:                              These two alone make
+      - Some new mathematical operators                 a *big* difference to
+      - Specification of JPEG objects is easier         how nice mkdrawf is
+      - Support for circular arcs                       to use.
+      - Some bugs fixed
+  - Cosmetic improvements:
+      - Manual reformatted and brought up to date
+      - Error handling is *very* slightly better
+      - Debugging is easier
+
+You can get it by anonymous FTP at
+  ftp://g.pet.cam.ac.uk/pub/software/mkdrawf-3.10.arc
+or on the web at
+  http://g.pet.cam.ac.uk/~gjm11/software.html
+(in fact, the "download" link at the latter place
+just points to the former).
+
+For those who don't know: "mkdrawf" is a powerful tool for making
+drawfiles; it is a (rather nasty) programming language in its own
+right. It comes with a tool that turns drawfiles into "mkdrawf"
+input files; it's sometimes useful to do that, munge the file with
+perl somehow, and then use "mkdrawf" to produce a modified drawfile.

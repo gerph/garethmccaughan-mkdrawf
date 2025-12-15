@@ -1,0 +1,158 @@
+/* general.c
+ *
+ * Routines used in both mouth.c and stomach.c.
+ *  - error handling
+ *  - xmalloc(), xrealloc(), xfree()
+ *  - cistreq(), copy_string()
+ */
+
+#include <ctype.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "mkdrawf.h"
+
+#define max_n_errors 100
+
+char *prog_name="[mkdrawf?]";
+static int return_code=0;
+
+int line_number=0;
+
+static int n_errors=0;
+static int n_warnings=0;
+
+/* |no_filenames!=0| iff we should not display filenames in error messages.
+ * This happens if "-e" is given on the command line. It's used when we're
+ * reporting errors via throwback.
+ */
+int no_filenames=0;
+
+/* Report on any errors and warnings. Say nothing if there were none.
+ * Return the return code to be used.
+ */
+int final_report(void) {
+  if (n_warnings || n_errors)
+    fprintf(stderr,"%s: %d warning%s, %d error%s.\n",
+      input_file_name,
+      n_warnings,(n_warnings==1)?"":"s",
+      n_errors,(n_errors==1)?"":"s");
+#ifdef PROFILE
+  _fmapstore("$.tmp.MDFcounts");
+#endif
+  return return_code;
+}
+
+/* Begin an error message.
+ */
+static void err_head(char *s) {
+  if (no_filenames)
+    fprintf(stderr,"Line %d: %s: ",line_number,s);
+  else
+#ifdef VERBOSE_ERRORS
+  fprintf(stderr,"%s, line %d of file %s: %s:\n",
+                 prog_name,line_number,input_file_name,s);
+#else
+  fprintf(stderr,"`%s', line %d: %s: ",input_file_name,line_number,s);
+#endif
+}
+
+void warn(char *s, ...) {
+  va_list ap;
+  va_start(ap,s);
+  err_head("warning");
+  vfprintf(stderr,s,ap);
+  va_end(ap);
+  fprintf(stderr,".\n");
+  return_code=4;
+  ++n_warnings;
+}
+
+/* Fatal errors.
+ */
+void error(char *s, ...) {
+  va_list ap;
+  va_start(ap,s);
+  err_head("fatal error");
+  vfprintf(stderr,s,ap);
+  va_end(ap);
+  fprintf(stderr,".\n");
+  final_report();
+  exit(12);
+}
+
+/* Recoverable-from errors. Not necessarily really minor.
+ * If we get too many of these, we'll exit via |error()|.
+ */
+void minor(char *s, ...) {
+  va_list ap;
+  va_start(ap,s);
+  err_head("error");
+  vfprintf(stderr,s,ap);
+  va_end(ap);
+  fprintf(stderr,".\n");
+  return_code=8;
+  if (++n_errors>=max_n_errors) error("Too many errors");
+}
+
+
+/* Allocate some memory, and fall over and die if we couldn't
+ * get enough.
+ */
+void *xmalloc(uint n, char *s) {
+  void *p=malloc(n);
+  if (!p) error("Out of memory for %s",s);
+#ifdef DEBUG
+  if (debug&d_memory)
+    fprintf(stderr,"Allocated %d bytes for %s, at 0x%X\n",n,s,(int)p);
+#endif
+  return p;
+}
+
+/* Change the size of a block of memory, and fall over if it
+ * went wrong.
+ */
+void *xrealloc(void *p, uint n, char *s) {
+  void *q=realloc(p,n);
+  if (!q) error("Out of memory re-sizing %s",s);
+#ifdef DEBUG
+  if (debug&d_memory)
+    fprintf(stderr,"Re-allocated %d bytes for %s, from %p to %p\n",
+            n,s,p,q);
+#endif
+  return q;
+}
+
+/* We use an instrumented |free()| when debugging; otherwise the usual
+ * one is just fine.
+ */
+#ifdef DEBUG
+void xfree(void *p) {
+  if (debug&d_memory)
+    fprintf(stderr,"Freeing memory at 0x%X, might be %d bytes\n",(int)p,
+          /* For at least some versions of the ShCL the #bytes is right */
+            ((int*)p)[-1]&~0xF0000000);
+  free(p);
+}
+#endif
+
+/* |cistreq(s1,s2)| returns non-zero iff s1==s2 when they're
+ * considered as caseless strings.
+ * This is used for comparing font names and sprite names.
+ */
+int cistreq(const char *s1, const char *s2) {
+  char c1,c2;
+  do { c1=tolower(*s1++); c2=tolower(*s2++); } while (c1==c2 && c1);
+  return (!c1 && !c2);
+}
+
+/* |copy_string(s)| returns a new string equal to |s| but in new storage.
+ */
+char *copy_string(const char *s) {
+  int l=strlen(s);
+  char *t=xmalloc(l+1,"a string");
+  memcpy(t,s,l+1);
+  return t;
+}

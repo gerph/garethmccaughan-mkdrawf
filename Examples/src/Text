@@ -1,0 +1,63 @@
+FontTable {
+  1 "Trinity.Medium"
+  2 "Trinity.Medium.Italic"
+  3 "Homerton.Bold"
+  4 "Homerton.Medium"
+}
+
+Text {
+  StartAt 100 100
+  Size 20 20
+  Style 1
+  Text "Trinity"
+}
+
+Text {
+  StartAt 100 200
+  Size 14 14
+  Style Font "Trinity.Medium.Italic" # see whether this works
+  Text "Trinity Italic"
+}
+
+Text {
+  StartAt 100 400
+  Size 40 40
+  Style Font "Homerton.bOLD" # case doesn't matter
+  Colour r255g0b0
+  Text "Homerton BOLD"
+}
+
+# show the box in which the remaining items are centred
+Path {
+  Width 0.25
+  OutlineColour r30g80b220
+  Style { Dash { 4 2 1 2 } }
+  Move 250 250
+  Line 350 250
+  Line 350 380
+  Line 250 380
+  Close
+}
+
+Text {
+  Style Font "Trinity.Medium"
+  Size 20 20
+  CentreIn 250 250 350 380
+  Text "Middle"
+}
+
+Text {
+  Style Font "Trinity.Medium.Italic"
+  Size 20 20
+  HCentreIn 250 250 350 380
+  StartAt 250 250     # x coord of this will be ignored
+  Text "Bottomqgf"    # descenders to show that baseline is at given pos
+}
+
+XfText {
+  Style Font "Homerton.Medium"
+  Size 10 10
+  CentreIn 250 250 350 380
+  Matrix Cos -1 Sin -1 Sin 1 Cos -1 0 0    # rotate clockwise by 1 radian
+  Text "wossnamewossnamewossname"
+}

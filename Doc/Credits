@@ -1,0 +1,28 @@
+All the code in mkdrawf is mine (so far...)
+
+However, I have a few people to thank for their ideas:
+
+  - My wife Emma; she's a maths teacher, and I originally wrote mkdrawf
+    because it seemed like the easiest way to produce diagrams for some
+    worksheets she was working on.
+
+  - Anthony Frost, of Online Media, for requesting many features which
+    are (in my opinion) good ideas. Also for spotting a number of bugs
+    before I did.
+
+  - Alexander Thoukydides, for pressuring me to make mkdrawf calculate
+    bounding boxes *properly* rather than just taking the convex hull
+    of the individual points.
+
+  - Alun Jones, for spotting, and sending me a fix for, a serious bug
+    in the bounding-box computation code.
+
+  - Oliver Schoen, for helpful suggestions and bug reports.
+
+I should also thank Donald E. Knuth, though I've never met him or
+corresponded with him, for the source code for TeX and METAFONT,
+which he published; they have taught me a lot about how to make
+macro-expansion languages slightly less awful than they otherwise
+might be. His work has also done much to shape my idea of what
+program documentation should be like, but he should not be blamed
+for my misjudgements.

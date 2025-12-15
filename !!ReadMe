@@ -1,0 +1,180 @@
+1. This software (and its documentation) is copyrighted; please see the
+   documentation for details. (Don‘t panic: it‘s free...)
+
+2. I don‘t think mkdrawf will work under RISC OS 2, because it uses
+   FontManager calls that didn‘t exist then (for calculating text
+   bounding boxes). If you have RISC OS 2, you can replace the
+   relevant code with something more simple-minded -- copy the code
+   that‘s used when an undeclared font is found. Of course, some of
+   the drawfile object types aren‘t understood by RISC OS 2‘s !Draw,
+   but that‘s a different matter...
+   decdrawf should be completely OK with RISC OS 2.
+   !Drawf uses some RISC OS 3 calls, but not (I think) so essentially
+   that you couldn't make it work under RISC OS 2. For this you will
+   probably want the source for o.glib -- ask me.
+
+3. What follows is a brief ”map• of this distribution.
+
+----------------------------------------------------------------------------
+
+Source
+------
+
+  contains source code, of course.
+
+    Source.c
+    Source.h
+    Source.o
+    Source.s
+      are just what you‘d expect (.s is assembler)
+      and contain the complete source code, and object files for
+      the machine-code bits (so you don‘t need an assembler).
+
+    Source.mdkrawf
+    Source.decdrawf
+      are the actual programs (so you don‘t need a compiler or assembler).
+      You should move them to somewhere in your Run$Path.
+
+    Source.Makefile
+      is, erm, a makefile. You may need to change some of the definitions
+      at the start.
+
+Doc
+---
+
+  contains documentation.
+
+    Doc.Manual.Impression
+    Doc.Manual.Text
+    Doc.ManualP      <-- not actually included!, but I can send it to you
+      contain basically the same material, except that some illustrative
+      drawfiles aren‘t in ManualT. In order these are in Impression format,
+      plain text and PostScript.
+      Incidentally, if you try to print out Manual.ImpressionI on a
+      PoscScript printer you are likely to have trouble, because many can‘t
+      cope with the length of the path in the snowflake curve example.
+      I can tell you how to get round this.
+
+    Doc.Manual.makemanual
+    Doc.Manual.fixddf
+    Doc.Manual.fixtext
+      are Perl scripts for generating the manual in text or DDF
+      form, from a single source file. (I used to maintain the
+      two formats separately, and it became unpleasant...)
+
+    Doc.Manual.source
+      is the input file for the "makemanual" script.
+
+    Doc.Manual.Examples
+      contains the examples used in the manual, as "mkdrawf" input
+      files and as drawfiles.
+
+    Doc.TutorialI
+    Doc.TutorialT
+    Doc.TutorialP    <-- like ManualP, nonexistent
+      contain a fairly gentle introduction to the use of mkdrawf and
+      decdrawf. If you find the manual heavy going, you might like to
+      try this.
+
+    Doc.DrawfI
+    Doc.DrawfT
+    Doc.DrawfP       <-- guess what?
+      contain documentation for !Drawf, a Wimp front end for mkdrawf and
+      decdrawf. This is short, and it won‘t take you long to read it.
+
+    Doc.Changes
+      contains an entry for every new version since 2.20, saying what's
+      changed. It's more for my convenience than yours :-).
+
+    Doc.Credits
+      is just what you think it is.
+
+    Doc.Custom
+      tells you a bit about how to proceed if you want to make changes
+      to mkdrawf.
+
+Examples
+--------
+
+  contains several example files of "mkdrawf" source code. Between them
+  they exhibit most of the features of "mkdrawf" not covered by the
+  examples in the manual. There are also some drawfiles to decode
+  with "decdrawf".
+
+    Examples.src
+      is mkdrawf source code.
+
+    Examples.draw
+      is for drawfiles.
+
+    Examples.dec
+      is a good place to put decoded drawfiles. I suggest here rather than
+      .src, so that if you decode something you created with mkdrawf you
+      don‘t overwrite the original source.
+
+    Examples.Makefile
+      is a makefile, to save you a bit of typing.
+
+Goodies
+-------
+
+  contains a couple of programs that produce mkdrawf code. You could
+  implement these completely in mkdrawf, but (1) it‘s nicer in a better
+  programming language, and (2) I wrote them before mkdrawf had any
+  programming features.
+
+  It also contains a useful program to compute the intersection of two
+  lines. Of course this really could be done in mkdrawf code, and that
+  might be a better way in most cases, but...
+
+  Goodies.c.dodec
+  Goodies.c.icos
+    produce, respectively, a dodecahedron and an icosahedron. Each
+    should be called with 3 command-line arguments, which are rotation
+    angles in degrees. Experiment!
+  Goodies.c.icosi
+    is an interactive version of icos, which displays its output on
+    the screen and allows you to change the parameters.
+  Goodies.c.intersect
+    takes 8 numbers (4 pairs of coordinates) and computes the intersection
+    of two lines. The args should be given in the order
+      line-1-point-1-x line-1-point-1-y line-1-point-2-x line-1-point-2-y
+      line-2-point-1-x line-2-point-1-y line-2-point-2-x line-2-point-2-y .
+
+  Goodies.o
+    is an empty directory to put object files in if you recompile these.
+
+  Goodies.dodec
+  Goodies.icos
+  Goodies.icosi
+  Goodies.intersect
+    are the executables produced from the above, in case you don‘t have
+    a C compiler.
+
+!Drawf
+------
+
+  is a Wimp front end for mkdrawf and decdrawf. You can just double-click
+  on the icon to run the program. Inside...
+
+  !Drawf.Source.c
+    contains the C source code for !Drawf.
+
+  !Drawf.Source.o
+    contains `o.glib', a small library which contains some rather low-level
+    functions for interacting with the Wimp. (Most are basically just SWI
+    veneers.) If you want the source code for this, ask me.
+
+  !Drawf.Source.h
+    contains header files for the stuff in o.glib.
+
+  !Drawf.Source.Makefile
+    is a makefile. Amazing. You won't be able to use it to re-make
+    o.glib, because you don't have the source code.
+
+  !Drawf.Run
+  !Drawf.!RunImage
+  !Drawf.!Sprites
+  !Drawf.Sprites
+  !Drawf.Templates
+    are just what you think they are.

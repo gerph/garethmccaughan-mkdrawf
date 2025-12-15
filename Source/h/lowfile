@@ -1,0 +1,17 @@
+/* >h.lowfile */
+
+/* header file for my low-level file access commands */
+
+int  low_open(char *name,int mode);
+void low_close(int handle);
+int  low_eof(int handle);
+int  low_read(int handle, void *buffer, int nbytes);
+void low_write(int handle, void *buffer, int nbytes);
+int  low_ptr(int handle);
+void low_setptr(int handle, int ptr);
+int  low_extent(int handle);
+int  save_file(char *filename, void *address, int nbytes, int filetype);
+
+#define low_READ 0x40
+#define low_CREATE 0x80
+#define low_UPDATE 0xC0

@@ -1,0 +1,37 @@
+# Snowflake curve
+Set $r3/2 Over Sqrt 3 2
+# Side { %x0 .. %y0 .. %x1 .. %y1 .. %n .. }
+# this should be inserted into a Path
+# The assumption is that we‘re
+# already "at" (x0,y0).
+Define Side {
+  IfLess %n 1
+    Line %x1 %y1
+  Else
+    Set %dx Over Minus %x1 %x0 3
+    Set %dy Over Minus %y1 %y0 3
+    Set %xa Plus %x0 %dx
+    Set %ya Plus %y0 %dy
+    Set %xb Minus %x1 %dx
+    Set %yb Minus %y1 %dy
+    Set %xh Over Plus %x0 %x1 2
+    Set %yh Over Plus %y0 %y1 2
+    Set %xt Plus %xh Times %dy $r3/2
+    Set %yt Minus %yh Times %dx $r3/2
+    Set %m Minus %n 1
+    Side { %x0 %x0 %y0 %y0  %x1 %xa %y1 %ya  %n %m }
+    Side { %x0 %xa %y0 %ya  %x1 %xt %y1 %yt  %n %m }
+    Side { %x0 %xt %y0 %yt  %x1 %xb %y1 %yb  %n %m }
+    Side { %x0 %xb %y0 %yb  %x1 %x1 %y1 %y1  %n %m }
+  EndIf
+}
+Set $x0 100  Set $y0 100
+Set $x1 400  Set $y1 100
+Set $x2 250  Set $y2 Plus 100 Times 300 $r3/2
+Path {
+  Move $x0 $y0
+  Side { %x0 $x0 %y0 $y0  %x1 $x1 %y1 $y1  %n 5 }
+  Side { %x0 $x1 %y0 $y1  %x1 $x2 %y1 $y2  %n 5 }
+  Side { %x0 $x2 %y0 $y2  %x1 $x0 %y1 $y0  %n 5 }
+  Close      # not really needed unless you want to fill it
+}

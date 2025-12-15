@@ -1,0 +1,73 @@
+                    Customising and extending mkdrawf
+                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+All this applies to version 3.02 of mkdrawf. It probably also applies
+pretty well to any other version called 3.xx.
+
+The simplest way to customise mkdrawf is to #define some of the symbols
+referenced in the source code, and recompile. (The best way to do this
+is with the -D option in the Makefile.) Here is a complete list of the
+symbols you can define:
+TAGS		enable the "tagfile" feature
+NO_JPEG		disable the JPEG object type
+DEBUG           support debugging (use -d... on command line to enable)
+SLOPPY		compute path bboxes naively. Gives bad results for
+		thick lines and curves, but faster and cheaper on memory
+VERBOSE_ERRORS	produces longer error messages
+ONLINE_MEDIA	define this if you are Online Media :-). Enables a
+		ghastly kludge which they need and you don't.
+
+If you make any other changes, YOU MAY NOT DISTRIBUTE THE RESULTING PROGRAM
+IN ANY FORM without first checking with me. I am very anxious that there be
+coherence among versions of mkdrawf; I am also anxious that I should not
+get the credit for your clever code, nor the blame for your bad code. If
+you come up with improvements to mkdrawf, please let me know; they may well
+get into the standard distribution.
+
+Both as a matter of good programming practice and to improve the chances
+of my being happy with your changes, you should arrange for any changes
+you make (apart from bugfixes!) to be selectable at compile time with #ifdef.
+If you're careful about how you arrange things, it should be possible to do
+this without mkdrawf becoming a solid mass of preprocessor directives.
+
+To add a new operator, you need to:
+  - add an entry for it in the |enum| typedef'ed to |spec_type|. The
+    convention used for names should be clear.
+  - add an |insert_spec()| call to the |init_global_hash()| function,
+    to put the operator's name into the hash table. Remember to put
+    the name in lower case.
+  - add a case in |get_x_token()| to make it do the right thing.
+    It is safe to read more tokens here, using |get_token()| (if
+    you don't want expansion) or |get_x_token()| (if you do want
+    expansion, which you almost certainly do). When you're done,
+    you should fill in |curr_token| (both fields) if the expansion
+    is a single token; or |goto next;| if the expansion is empty;
+    or contruct a token list and start reading that, if the expansion
+    is several tokens. This last option is hairier than the others.
+  - if you want the infix parser to grok it, add it in the appropriate
+    places. (If it's a prefix operator that takes exactly one
+    argument, just add it to the big list of cases beginning with
+    s_Sqrt. If it's an infix operator, put it in the while-loop,
+    modelling your code on that for s_Plus, s_Times etc.)
+
+Please be careful about memory management. It is seldom possible
+to free anything; the point is that tokens can find their way into
+macro definitions and loops and things, so you can't free anything
+that might find its way into a token. This is a real mess, and
+eventually I might sort it out, with reference counts or something.
+Until then, don't free anything unless you know you're safe. Search
+the code for "free(" to get some idea of when it is safe to free
+things. Oh, and if you *do* free anything, call |xfree()| not |free()|;
+when memory-use debugging is compiled in this displays useful messages.
+
+It would be helpful if you could adhere to my layout style (not much
+whitespace, substantial comments before blocks of code, short comments
+for obscure code); but I know how hard I find it conforming to others'
+conventions, and it wouldn't really be fair to insist that you conform
+to mine.
+
+If you do make changes and they do make it into the "official" version
+of mkdrawf, you will be credited with the code that's yours. Copyright
+for the program as a whole, though, remains mine; I make no claims on
+anyone else's code, but the restrictions on what's done with my code
+remain.

@@ -1,0 +1,43 @@
+# We can work with different units. Watch:
+
+define box [ %x0 %y0 %side %text ] {
+  path {
+    width 1pt
+    move %x0 %y0  rline %side 0  rline 0 %side
+    rline ( - %side ) 0 close
+  }
+  text {
+    startat ( ( %x0 %y0 + %side + 3 ) )
+    style font "trinity.medium"
+    size 10pt 10pt
+    text %text
+  }
+}
+
+box [ 100 100 10pt "10pt" ]
+box [ 200 100 2cm  "2cm" ]
+box [ 300 100 1in  "1in" ]
+# There are other units. Read the manual or the source if you care.
+
+# Now, we can change the basic units we work in.
+# DANGER: this will change all sorts of things, including
+# the width of the lines in the <box> macro *even though
+# that's given with explicit units*. That's because the
+# interpretation of those explicit units is done at reading
+# time, not at macro expansion time.
+
+Units $millimetres
+# So now our lines will be 1mm thick, and our text 10mm high!
+# And the "20"s below will mean 20mm. But the 3cm will still
+# mean 3cm: so the effect of that last line was *not* just to
+# magnify everything.
+box [ 20 20 3cm "3cm" ]
+
+# And we can retrieve the size of our units, thus:
+
+text {
+  startat 20 100
+  size 5 5
+  style font "trinity.medium.italic"
+  text append 2 "unit = " num2str unit
+}

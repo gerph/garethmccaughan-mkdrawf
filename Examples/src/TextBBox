@@ -1,0 +1,112 @@
+# %text %xs %ys %style  are the obvious things
+# You can set %sz instead of %xs and %ys
+# Set one of  %x,%xleft,%xright,%xmid  and one of  %y,%ytop,%ybot,%ymid .
+# The difference between %y and %ybot is descenders. I don't know whether
+# in practice there's ever a difference between %x and %xleft.
+# You can also set %margin, which (with %xleft etc) forces the edge of
+# the text to be that far away from the given coordinate.
+# This leaves the bbox variables set according to the location where
+# the text actually ended up.
+
+Define PlaceText {
+  IfExists %sz
+    Set %xs %sz
+    Set %ys %sz
+  EndIf
+  Text {
+    Virtual
+    StartAt 0 0
+    IfExists %xs
+      Size %xs %ys
+    EndIf
+    IfExists %style
+      Style %style
+    EndIf
+    Text %text
+  }
+  IfExists %margin Else Set %margin 0 EndIf
+  IfExists %xleft
+    Set %x Plus Minus %xleft $_x0 %margin
+  Else
+    IfExists %xright
+      Set %x Minus Minus %xright $_x1 %margin
+    Else
+      IfExists %xmid
+        Set %x Minus %xmid Times 0.5 Plus $_x0 $_x1
+      EndIf
+    EndIf
+  EndIf
+  IfExists %ybot
+    Set %y Plus Minus %ybot $_y0 %margin
+  Else
+    IfExists %ytop
+      Set %y Minus Minus %ytop $_y1 %margin
+    Else
+      IfExists %ymid
+        Set %y Minus %ymid Times 0.5 Plus $_y0 $_y1
+      EndIf
+    EndIf
+  EndIf
+  Text {
+    StartAt %x %y
+    IfExists %xs
+      Size %xs %ys
+    EndIf
+    IfExists %style
+      Style %style
+    EndIf
+    Text %text
+  }
+}
+
+# Here's a simple test suite.
+
+Define Mark {
+  Path {
+    Width 0.5
+    Move %x Minus %y 4 RLine 0 8
+    Move Minus %x 4 %y RLine 8 0
+  }
+}
+
+Text { Virtual Size 10 10 Style Font "Trinity.Medium.Italic" Text "" }
+
+Mark { %x 100 %y 100 } PlaceText { %x 100 %y 100 %text "x,y" }
+Mark { %x 200 %y 100 } PlaceText { %xleft 200 %y 100 %text "xleft,y" }
+Mark { %x 300 %y 100 } PlaceText { %xmid 300 %y 100 %text "xmid,y" }
+Mark { %x 400 %y 100 } PlaceText { %xright 400 %y 100 %text "xright,y" }
+
+Mark { %x 100 %y 200 } PlaceText { %x 100 %ybot 200 %text "x,ybot" }
+Mark { %x 200 %y 200 } PlaceText { %xleft 200 %ybot 200 %text "xleft,ybot" }
+Mark { %x 300 %y 200 } PlaceText { %xmid 300 %ybot 200 %text "xmid,ybot" }
+Mark { %x 400 %y 200 } PlaceText { %xright 400 %ybot 200 %text "xright,ybot" }
+
+Mark { %x 100 %y 300 } PlaceText { %x 100 %ymid 300 %text "x,ymid" }
+Mark { %x 200 %y 300 } PlaceText { %xleft 200 %ymid 300 %text "xleft,ymid" }
+Mark { %x 300 %y 300 } PlaceText { %xmid 300 %ymid 300 %text "xmid,ymid" }
+Mark { %x 400 %y 300 } PlaceText { %xright 400 %ymid 300 %text "xright,ymid" }
+
+Mark { %x 100 %y 400 } PlaceText { %x 100 %ytop 400 %text "x,ytop" }
+Mark { %x 200 %y 400 } PlaceText { %xleft 200 %ytop 400 %text "xleft,ytop" }
+Mark { %x 300 %y 400 } PlaceText { %xmid 300 %ytop 400 %text "xmid,ytop" }
+Mark { %x 400 %y 400 } PlaceText { %xright 400 %ytop 400 %text "xright,ytop" }
+
+Mark { %x 100 %y 500 } PlaceText { %x 100 %y 500 %text "x,y" %margin 3 }
+Mark { %x 200 %y 500 } PlaceText { %xleft 200 %y 500 %text "xleft,y" %margin 3 }
+Mark { %x 300 %y 500 } PlaceText { %xmid 300 %y 500 %text "xmid,y" %margin 3 }
+Mark { %x 400 %y 500 } PlaceText { %xright 400 %y 500 %text "xright,y" %margin 3 }
+
+Mark { %x 100 %y 600 } PlaceText { %x 100 %ybot 600 %text "x,ybot" %margin 3 }
+Mark { %x 200 %y 600 } PlaceText { %xleft 200 %ybot 600 %text "xleft,ybot" %margin 3 }
+Mark { %x 300 %y 600 } PlaceText { %xmid 300 %ybot 600 %text "xmid,ybot" %margin 3 }
+Mark { %x 400 %y 600 } PlaceText { %xright 400 %ybot 600 %text "xright,ybot" %margin 3 }
+
+Mark { %x 100 %y 700 } PlaceText { %x 100 %ymid 700 %text "x,ymid" %margin 3 }
+Mark { %x 200 %y 700 } PlaceText { %xleft 200 %ymid 700 %text "xleft,ymid" %margin 3 }
+Mark { %x 300 %y 700 } PlaceText { %xmid 300 %ymid 700 %text "xmid,ymid" %margin 3 }
+Mark { %x 400 %y 700 } PlaceText { %xright 400 %ymid 700 %text "xright,ymid" %margin 3 }
+
+Mark { %x 100 %y 800 } PlaceText { %x 100 %ytop 800 %text "x,ytop" %margin 3 }
+Mark { %x 200 %y 800 } PlaceText { %xleft 200 %ytop 800 %text "xleft,ytop" %margin 3 }
+Mark { %x 300 %y 800 } PlaceText { %xmid 300 %ytop 800 %text "xmid,ytop" %margin 3 }
+Mark { %x 400 %y 800 } PlaceText { %xright 400 %ytop 800 %text "xright,ytop" %margin 3 }

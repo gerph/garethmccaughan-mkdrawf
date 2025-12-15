@@ -1,0 +1,43 @@
+# %x0,%y0 is centre
+# %r      is radius
+# %a0,%a1 are starting and ending
+#         angles in radians
+# %n      if set, indicates how many
+#         arcs to use
+Define Arc1 {              # can't call it Arc any more!
+  Set %da Minus %a1 %a0
+  IfExists %n Else
+    Set %n Floor Plus .99 Over %da .75
+  EndIf
+  Set %da Over %da %n
+  Set %t Over Minus 1 Cos Over %da 2
+              Times .75 Sin Over %da 2
+  Move Plus %x0 Times %r Cos %a0
+       Plus %y0 Times %r Sin %a0
+  Set %aa %a0
+  Set %cc Cos %aa
+  Set %ss Sin %aa
+  For %k 0 %n {
+    Set %a %aa
+    Set %aa Plus %a %da
+    Set %c %cc        Set %s %ss
+    Set %cc Cos %aa   Set %ss Sin %aa
+    Curve Plus %x0 Times %r Minus %c Times %t %s
+          Plus %y0 Times %r Plus %s Times %t %c
+          Plus %x0 Times %r Plus %cc Times %t %ss
+          Plus %y0 Times %r Minus %ss Times %t %cc
+          Plus %x0 Times %r %cc
+          Plus %y0 Times %r %ss
+  }
+}
+Set $Pi 3.141592653589793  # unnecessary now
+Path {
+  Arc1 { %x0 300 %y0 300 %r 200 %a0 0 %a1 Times 2 $Pi %n 2 }
+  # very inaccurate: only 2 arcs
+  Close
+}
+Path {
+  Arc1 { %x0 300 %y0 300 %r 200 %a0 0 %a1 Times 2 $Pi }
+  # I think this does 9 arcs
+  Close
+}
