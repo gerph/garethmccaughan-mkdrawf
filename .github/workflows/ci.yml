@@ -1,5 +1,5 @@
 ---
-# RISC OS CI build through build.riscos.online
+# RISC OS CI build through build.riscos.online (and we build for linux too!)
 #
 # To reuse this configuration with your own repository:
 #
@@ -32,6 +32,53 @@ on:
   #  branches: ["*"]
 
 jobs:
+  build-linux:
+    # The type of runner that the job will run on
+    runs-on: ubuntu-latest
+
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      leafname: ${{ steps.version.outputs.leafname }}
+
+    # Steps represent a sequence of tasks that will be executed as part of the job
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - uses: actions/checkout@v4
+
+      - name: Build for Linux
+        run: |
+          cd Source/posix
+
+          # We can only build decdrawf at the moment
+          make decdrawf
+
+      - name: Archive the built files
+        run: |
+          cd Source/posix
+          zip -9r ubuntu.zip decdrawf
+
+      - name: Give the output a versioned name
+        id: version
+        run: |
+          if [[ -f Source/VersionNum ]] ; then
+              version=$(sed '/MajorVersion / ! d ; s/.*MajorVersion *"\(.*\)"/\1/' Source/VersionNum)
+          else
+              version=$(git rev-parse --short HEAD)
+          fi
+          echo "This is version: $version"
+          if [ -f Source/posix/ubuntu.zip ] ; then
+              cp Source/posix/ubuntu.zip "mkdrawf-tools-ubuntu-$version.zip"
+          else
+              echo "No archive was built for tools?"
+              exit 1
+          fi
+          echo "version=$version" >> $GITHUB_OUTPUT
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Ubuntu-build
+          path: mkdrawf-*.zip
+
   build-riscos:
     # The type of runner that the job will run on
     runs-on: ubuntu-latest
@@ -113,6 +160,11 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: RISCOS-build
+
+      - name: Download built Ubuntu binary
+        uses: actions/download-artifact@v4
+        with:
+          name: Ubuntu-build
 
       - name: Create Release
         id: create_release

@@ -107,3 +107,10 @@ improvements: remove horrible macro-parameter scoping bug;
               remove limitation on number of columns in a text area;
               fix matrix translation bugs; nicer handling of JPEG objects;
               complete reformatting of manual.
+
+version 3.11 2025-12-15
+admin:        transferred to GitHub, under MIT license
+new features: none
+improvements: `decdrawf`, `mkdrawf` and Goodies directory compiled
+              for 26/32-bit RISC OS.
+              `decdrawf` compilable for POSIX systems.
