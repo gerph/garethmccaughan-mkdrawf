@@ -5,7 +5,8 @@
 #
 # Program specific options:
 #
-COMPONENT  = mkdrawf
+#COMPONENT  = mkdrawf
+COMPONENT  = decdrawf
 
 # Specifies additional targets for startup
 #INITTARGET = inittarget
@@ -40,8 +41,12 @@ OBJS       = o.general \
 			 o.test
 endif
 ifeq (${COMPONENT},decdrawf)
-OBJS =	o.decdrawf \
-        o.lowfile
+OBJS =	o.decdrawf
+ifeq (${BUILD64},1)
+OBJS += o.lowfile_c
+else
+OBJS += o.lowfile
+endif
 endif
 ifeq (${COMPONENT},mkdrawf)
 OBJS       = o.general \
