@@ -1,0 +1,62 @@
+#!/usr/bin/env riscos-amu -f
+# Makefile for mkdrawf
+#
+
+#
+# Program specific options:
+#
+COMPONENT  = mkdrawf
+
+# Specifies additional targets for startup
+#INITTARGET = inittarget
+
+# Specifies additional targets for clean
+#CLEANTARGET = cleantarget
+
+# aif, for linked objects
+# aof, for a partially linked AOF object
+# util, for utilities built with objasm
+# basic, for BASIC tools
+TYPE       = aif
+
+# The file to output (defaults ${COMPONENT})
+#TARGET = <filename>
+
+# Comma-separated list of paths to use for includes, such as:
+#	C:LibName.
+INCLUDES   =
+
+# Space separated list of defines to set, eg -DDEBUG
+CDEFINES   = -DDEBUG
+
+# Space separated list of libraries to link against, eg C:LibName.o.libLibName
+LIBS       = ${CLIB}
+
+# Objects to build, using the format o.<name> (will be varied for build type)
+ifeq (${COMPONENT},test)
+OBJS       = o.general \
+             o.mouth \
+             o.syscalls \
+			 o.test
+endif
+ifeq (${COMPONENT},decdrawf)
+OBJS =	o.decdrawf \
+        o.lowfile
+endif
+ifeq (${COMPONENT},mkdrawf)
+OBJS       = o.general \
+             o.mouth \
+             o.stomach \
+             o.syscalls \
+             o.tagfile
+endif
+
+# Space separated list of XML files for building documentation.
+#DOCSRC = <prm-in-xml-sources>
+
+
+include LibraryCommand
+
+
+#---------------------------------------------------------------------------
+# Dynamic dependencies:
