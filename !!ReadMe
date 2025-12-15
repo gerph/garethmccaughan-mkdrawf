@@ -1,19 +1,19 @@
 1. This software (and its documentation) is copyrighted; please see the
-   documentation for details. (Don‘t panic: it‘s free...)
+   documentation for details. (Don't panic: it's free...)
 
-2. I don‘t think mkdrawf will work under RISC OS 2, because it uses
-   FontManager calls that didn‘t exist then (for calculating text
+2. I don't think mkdrawf will work under RISC OS 2, because it uses
+   FontManager calls that didn't exist then (for calculating text
    bounding boxes). If you have RISC OS 2, you can replace the
    relevant code with something more simple-minded -- copy the code
-   that‘s used when an undeclared font is found. Of course, some of
-   the drawfile object types aren‘t understood by RISC OS 2‘s !Draw,
-   but that‘s a different matter...
+   that's used when an undeclared font is found. Of course, some of
+   the drawfile object types aren't understood by RISC OS 2's !Draw,
+   but that's a different matter...
    decdrawf should be completely OK with RISC OS 2.
    !Drawf uses some RISC OS 3 calls, but not (I think) so essentially
    that you couldn't make it work under RISC OS 2. For this you will
    probably want the source for o.glib -- ask me.
 
-3. What follows is a brief ”map• of this distribution.
+3. What follows is a brief 'map' of this distribution.
 
 ----------------------------------------------------------------------------
 
@@ -26,13 +26,13 @@ Source
     Source.h
     Source.o
     Source.s
-      are just what you‘d expect (.s is assembler)
+      are just what you'd expect (.s is assembler)
       and contain the complete source code, and object files for
-      the machine-code bits (so you don‘t need an assembler).
+      the machine-code bits (so you don't need an assembler).
 
     Source.mdkrawf
     Source.decdrawf
-      are the actual programs (so you don‘t need a compiler or assembler).
+      are the actual programs (so you don't need a compiler or assembler).
       You should move them to somewhere in your Run$Path.
 
     Source.Makefile
@@ -48,10 +48,10 @@ Doc
     Doc.Manual.Text
     Doc.ManualP      <-- not actually included!, but I can send it to you
       contain basically the same material, except that some illustrative
-      drawfiles aren‘t in ManualT. In order these are in Impression format,
+      drawfiles aren't in ManualT. In order these are in Impression format,
       plain text and PostScript.
       Incidentally, if you try to print out Manual.ImpressionI on a
-      PoscScript printer you are likely to have trouble, because many can‘t
+      PoscScript printer you are likely to have trouble, because many can't
       cope with the length of the path in the snowflake curve example.
       I can tell you how to get round this.
 
@@ -80,7 +80,7 @@ Doc
     Doc.DrawfT
     Doc.DrawfP       <-- guess what?
       contain documentation for !Drawf, a Wimp front end for mkdrawf and
-      decdrawf. This is short, and it won‘t take you long to read it.
+      decdrawf. This is short, and it won't take you long to read it.
 
     Doc.Changes
       contains an entry for every new version since 2.20, saying what's
@@ -110,7 +110,7 @@ Examples
     Examples.dec
       is a good place to put decoded drawfiles. I suggest here rather than
       .src, so that if you decode something you created with mkdrawf you
-      don‘t overwrite the original source.
+      don't overwrite the original source.
 
     Examples.Makefile
       is a makefile, to save you a bit of typing.
@@ -119,7 +119,7 @@ Goodies
 -------
 
   contains a couple of programs that produce mkdrawf code. You could
-  implement these completely in mkdrawf, but (1) it‘s nicer in a better
+  implement these completely in mkdrawf, but (1) it's nicer in a better
   programming language, and (2) I wrote them before mkdrawf had any
   programming features.
 
@@ -148,7 +148,7 @@ Goodies
   Goodies.icos
   Goodies.icosi
   Goodies.intersect
-    are the executables produced from the above, in case you don‘t have
+    are the executables produced from the above, in case you don't have
     a C compiler.
 
 !Drawf
