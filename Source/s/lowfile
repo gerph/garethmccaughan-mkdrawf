@@ -61,7 +61,11 @@ low_open
         MOV     r0,r2       ;
         SWI     XOS_Bit+OS_Find
         MOVVS   r0,#0       ; if error
-        LDMFD   sp!,{pc}^   ; return, restoring flags
+    [ {CONFIG} = 26
+        LDMFD   sp!,{pc}^
+    |
+        LDMFD   sp!,{pc}
+    ]
 
 ; void low_close(int handle);
 ; if handle==0 this doesn't do anything. (This is not the same
@@ -73,7 +77,11 @@ low_close
         MOVNE   r1,r0
         MOVNE   r0,#0
         SWINE   XOS_Bit+OS_Find
+    [ {CONFIG} = 26
         LDMFD   sp!,{pc}^
+    |
+        LDMFD   sp!,{pc}
+    ]
 
 ; int low_eof(int handle);
 ; returns 0 if not at EOF, 1 if at EOF.
@@ -86,7 +94,11 @@ low_eof STMFD   sp!,{lr}
         CMP     r2,#0       ; annoying. We need to return 0 or 1.
         MOVEQ   r0,#0
         MOVNE   r0,#1
+    [ {CONFIG} = 26
         LDMFD   sp!,{pc}^
+    |
+        LDMFD   sp!,{pc}
+    ]
 
 ; int low_read(int handle, void *buffer, int nbytes);
 ; returns number of bytes actually read; 0 if there was an error.
@@ -101,7 +113,11 @@ low_read
         SWI     XOS_Bit+OS_GBPB
         MOVVS   r0,#0
         SUBVC   r0,r2,r5    ; next_byte-first_byte
-        LDMFD   sp!,{r4,r5,pc}^
+    [ {CONFIG} = 26
+        LDMFD   sp!,{r4, r5, pc}^
+    |
+        LDMFD   sp!,{r4, r5, pc}
+    ]
 
 ; void low_write(int handle, void *buffer, int nbytes);
 ; doesn't return anything as the corresponding OS_GBPB call doesn't
@@ -114,7 +130,11 @@ low_write
         MOV     r1,r0       ; handle
         MOV     r0,#2       ; write, at current position
         SWI     XOS_Bit+OS_GBPB
-        LDMFD   sp!,{r4,r5,pc}^
+    [ {CONFIG} = 26
+        LDMFD   sp!,{r4, r5, pc}^
+    |
+        LDMFD   sp!,{r4, r5, pc}
+    ]
 
 ; int low_ptr(int handle);
 ; returns file pointer
@@ -125,7 +145,11 @@ low_ptr STMFD   sp!,{lr}
         MOV     r0,#0
         SWI     XOS_Bit+OS_Args
         MOV     r0,r2
+    [ {CONFIG} = 26
         LDMFD   sp!,{pc}^
+    |
+        LDMFD   sp!,{pc}
+    ]
 
 ; void low_setptr(int handle, int ptr);
 ; sets the file pointer. Again, there isn't anything useful to return.
@@ -136,7 +160,11 @@ low_setptr
         MOV     r1,r0
         MOV     r0,#1
         SWI     XOS_Bit+OS_Args
+    [ {CONFIG} = 26
         LDMFD   sp!,{pc}^
+    |
+        LDMFD   sp!,{pc}
+    ]
 
 ; int low_seek(int handle, int n, int whence);
 ; sets pointer, but now
@@ -164,7 +192,11 @@ low_seek_doit
         SWI     XOS_Bit+OS_Args
         BVS     low_seek_fail
         MOV     r0,#0
+    [ {CONFIG} = 26
         LDMFD   sp!,{pc}^
+    |
+        LDMFD   sp!,{pc}
+    ]
 low_seek_advance
         MOV     r3,r1    ; save
         MOV     r1,r0
@@ -174,7 +206,11 @@ low_seek_advance
         BGE     low_seek_doit
 low_seek_fail
         MVN     r0,#0
+    [ {CONFIG} = 26
         LDMFD   sp!,{pc}^
+    |
+        LDMFD   sp!,{pc}
+    ]
 low_seek_end
         MOV     r3,r1    ; save
         MOV     r1,r0
@@ -195,10 +231,18 @@ low_extent
         SWI     XOS_Bit+OS_Args
         BVS     low_ext_fail
         MOV     r0,r2
+    [ {CONFIG} = 26
         LDMFD   sp!,{pc}^
+    |
+        LDMFD   sp!,{pc}
+    ]
 low_ext_fail
         MVN     r0,#0
+    [ {CONFIG} = 26
         LDMFD   sp!,{pc}^
+    |
+        LDMFD   sp!,{pc}
+    ]
 
 ; int save_file(char *name, void *address, int nbytes, int filetype);
 ; returns 0 for success, -1 for failure.
@@ -214,6 +258,10 @@ save_file
 	SWI XOS_Bit+OS_File
 	MVNVS r0,#0
 	MOVVC r0,#0
+    [ {CONFIG} = 26
 	LDMFD sp!,{r4,r5,pc}^
+    |
+    LDMFD sp!,{r4,r5,pc}
+    ]
 
 	END
