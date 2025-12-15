@@ -1,0 +1,5 @@
+The Manual must be built on RISC OS.
+
+I (Gerph) no longer have access to build Impression documents, so this
+will not work for me. However, I see no reason why the scripts here
+should not function on RISC OS.
