@@ -1,0 +1,24 @@
+/* mkdrawf (3.10) 21:11:16 15/12/2025
+ *
+ * This file is automatically maintained by vmanage, do not edit manually.
+ *
+ */
+#define Module_MajorVersion_CMHG        3.10
+#define Module_MinorVersion_CMHG        
+#define Module_Date_CMHG                13 Sep 1998
+
+#define Module_MajorVersion             "3.10"
+#define Module_Version                  310
+#define Module_MinorVersion             ""
+#define Module_Date                     "13 Sep 1998"
+
+#define Module_ApplicationDate2         "13-Sep-98"
+#define Module_ApplicationDate4         "13-Sep-1998"
+
+#define Module_ComponentName            "mkdrawf"
+#define Module_ComponentBranch          ""
+#define Module_ComponentPath            "mkdrawf"
+
+#define Module_FullVersion              "3.10"
+#define Module_FullVersionAndDate       "3.10 (13 Sep 1998)"
+#define Module_HelpVersion              "3.10 (13 Sep 1998)"

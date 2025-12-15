@@ -57,6 +57,12 @@ endif
 
 include LibraryCommand
 
+${ODIR}.decdrawf: VersionNum
+${ODIR}.stomach: VersionNum
+
+
+VersionNum: ^.VersionNum
+	${CP} $? $@ ${CPFLAGS}
 
 #---------------------------------------------------------------------------
 # Dynamic dependencies:

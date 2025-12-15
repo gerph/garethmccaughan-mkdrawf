@@ -11,14 +11,14 @@
  *  - nothing more, so far
  */
 
-#define VERSION_STRING "3.10 (13/9/1998)"
-
 #include <ctype.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "lowfile.h"
+
+#include "VersionNum"
 
 static int short_errors=0;
 static char *file_name=0;
@@ -531,7 +531,7 @@ int main(int ac, char *av[]) {
   prog_name=av[0];
   while(++av,--ac) {
     if (!strcmp(*av,"-v")) {
-      fprintf(stderr,"This is decdrawf, version " VERSION_STRING ".\n");
+      fprintf(stderr,"This is decdrawf, version " Module_FullVersionAndDate ".\n");
       return 0; }
     if (!strcmp(*av,"-s")) {
       if (sprite_file_name) goto usage;

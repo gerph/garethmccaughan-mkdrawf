@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "VersionNum"
 #include "mkdrawf.h"
 
 #ifdef EXPRO
@@ -1457,7 +1458,7 @@ exprofle_init("$.tmp.MDFPROF");
 
   while (++av,--ac) {
     if (!strcmp(*av,"-v")) {
-      fprintf(stderr,"This is mkdrawf, version " VERSION_STRING ".\n");
+      fprintf(stderr,"This is mkdrawf, version " Module_FullVersionAndDate ".\n");
       minus_v=1;
       continue; }
     if (!strcmp(*av,"-e")) { no_filenames=1; continue; }
