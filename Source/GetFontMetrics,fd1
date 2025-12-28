@@ -1,0 +1,58 @@
+REM >GetFontMetrics
+REM
+REM This program generates the character metrics which can be embedded into the
+REM mkdrawf program for the font characters. It will not be perfect, but for non-
+REM RISCOS systems it will at least let us get approximations of the font sizes.
+ON ERROR ERROR EXT ERR, REPORT$ + " at line " + STR$ERL:END
+morefonts%=TRUE
+xsize% = 16 * 256
+ysize% = 16 * 256
+xdpi% = -1
+ydpi% = -1
+DIM blk% 256
+WHILE morefonts%
+    READ fontname$
+    IF fontname$ = "END" THEN
+        morefonts%=FALSE
+    ELSE
+        PRINT "{"
+        PRINT "    """;fontname$;""","
+        PRINT "    {"
+        SYS "Font_FindFont",, fontname$, xsize%, ysize%, xdpi%, ydpi% TO fonth%
+        blk%!0=0:blk%!4=0:REM Extra space on spaces
+        blk%!8=0:blk%!12=0:REM Extra space on each letter
+        blk%!16=-1:REM No split character
+        blk%!20=0:blk%!24=0:REM StringBBox BL
+        blk%!28=0:blk%!32=0:REM StringBBox TR
+        FOR I=32TO255
+            IF I=127 THENs$=" " ELSE s$=CHR$I
+            IF I<>255 THENcomma$="," ELSE comma$=" "
+            SYS "Font_ScanString", fonth%, s$, (1<<8)OR(1<<18)OR(1<<5), &7FFFFFFF, &7FFFFFFF, blk% TO ,,,xadv%, yadv%
+            bbox_l%=blk%!(5*4)
+            bbox_b%=blk%!(6*4)
+            bbox_r%=blk%!(7*4)
+            bbox_t%=blk%!(8*4)
+            PRINT "        { ";xadv%;", ";yadv%;", ";bbox_l%;", ";bbox_b%;", ";bbox_r%;", ";bbox_t%;" }";comma$;"  // ";I;" = '";s$;"'"
+        NEXT
+        PRINT "    }"
+        PRINT "},"
+        SYS "Font_LoseFont", fonth%
+    ENDIF
+ENDWHILE
+PRINT "{ NULL }"
+END
+:
+DATA "Homerton.Medium"
+DATA "Homerton.Medium.Oblique"
+DATA "Homerton.Bold"
+DATA "Homerton.Bold.Oblique"
+DATA "Trinity.Medium"
+DATA "Trinity.Medium.Italic"
+DATA "Trinity.Bold"
+DATA "Trinity.Bold.Italic"
+DATA "Corpus.Medium"
+DATA "Corpus.Medium.Oblique"
+DATA "Corpus.Bold"
+DATA "Corpus.Bold.Oblique"
+:
+DATA "END"

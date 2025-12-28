@@ -53,6 +53,7 @@ OBJS       = o.general \
              o.mouth \
              o.stomach \
              o.syscalls \
+             o.fake_fontscanstring \
              o.tagfile
 endif
 

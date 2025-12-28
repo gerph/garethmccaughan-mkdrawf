@@ -1,0 +1,33 @@
+/*******************************************************************
+ * File:        fake_fontscanstring
+ * Purpose:     Perform font string bbox calculations on non-RISC OS systems
+ * Author:      Gerph
+ * Date:        28 Dec 2025
+ ******************************************************************/
+
+#ifndef FAKE_FONTSCANSTRING_H
+#define FAKE_FONTSCANSTRING_H
+
+#include <stdint.h>
+
+typedef struct riscos_fontstringbbox_s {
+    int32_t x0, y0, x1, y1;
+} riscos_fontstringbbox_t;
+
+
+/*************************************************** Gerph *********
+ Function:      riscos_fontscanstring
+ Description:   Perform something akin to Font_ScanString
+                We don't pay any attention to the left-to-right, kerning,
+                spacing, matrix or anything else.
+ Parameters:    fontname-> the font name we're interested in.
+                xsize = font x size
+                ysize = font y size
+                string-> the string we're sizing
+                bbox-> the bbox to populate
+ Returns:       1 if generated the string size; 0 if we failed
+ ******************************************************************/
+int riscos_fontscanstring(const char *fontname, int32_t xsize, int32_t ysize,
+                          const char *string, riscos_fontstringbbox_t *bbox);
+
+#endif
