@@ -24,10 +24,12 @@ typedef struct riscos_fontstringbbox_s {
                 xsize = font x size
                 ysize = font y size
                 string-> the string we're sizing
+                matrix-> the matrix to use, or NULL if identity present
                 bbox-> the bbox to populate
  Returns:       1 if generated the string size; 0 if we failed
  ******************************************************************/
 int riscos_fontscanstring(const char *fontname, int32_t xsize, int32_t ysize,
-                          const char *string, riscos_fontstringbbox_t *bbox);
+                          const char *string, int *matrix,
+                          riscos_fontstringbbox_t *bbox);
 
 #endif

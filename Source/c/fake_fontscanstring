@@ -5,10 +5,20 @@
  * Date:        28 Dec 2025
  ******************************************************************/
 
+#include <stdio.h>
 #include <stdint.h>
 #include <string.h>
 
 #include "fake_fontscanstring.h"
+
+/* Debug this file */
+//#define DEBUG_THIS
+
+#ifdef DEBUG_THIS
+#define dprintf if (1) printf
+#else
+#define dprintf if (0) printf
+#endif
 
 /* Font character details returned from Font_ScanString */
 typedef struct riscos_fontchardetails_s {
@@ -2777,10 +2787,75 @@ static const riscos_fontmetrics_t riscos_fontmetrics[] = {
 
 #define REFERENCE_XSIZE (256 * 16)
 #define REFERENCE_YSIZE (256 * 16)
-#define FIXED_POINT_SCALE (65536)
+#define FIXED_POINT_SCALE (256)
 
 #define min(a, b) (((a) < (b)) ? (a) : (b))
 #define max(a, b) (((a) > (b)) ? (a) : (b))
+
+static int stricmp(const char *ap, const char *bp)
+{
+    while (1)
+    {
+        int a = *ap++;
+        int b = *bp++;
+        int diff;
+        if (a < ' ') a = 0;
+        if (b < ' ') b = 0;
+        if (((uint32_t)(a - 'A')) <= 'Z' - 'A') a += 32;
+        if (((uint32_t)(b - 'A')) <= 'Z' - 'A') b += 32;
+        diff = a - b;
+        if (diff || a==0)
+            return diff;
+    }
+}
+
+typedef struct point_s
+{
+  double x,y;
+} point_t;
+
+/* a b 0
+   c d 0
+   e f 1 */
+typedef struct matrix_s
+{
+  double a,b;
+  double c,d;
+  double e,f;
+} matrix_t;
+
+/*********************************************** <c> Gerph *********
+ Function:     matrix_new
+ Description:  Create a new matrix to modify by
+ Parameters:   a,b,c,d,e,f = matrix values
+ Returns:      matrix structure
+ ******************************************************************/
+matrix_t matrix_new(double a, double b, double c, double d, double e, double f)
+{
+  matrix_t new;
+  new.a = a;
+  new.b = b;
+  new.c = c;
+  new.d = d;
+  new.e = e;
+  new.f = f;
+  return new;
+}
+
+/*********************************************** <c> Gerph *********
+ Function:     matrix_apply
+ Description:  Apply a matrix to a point
+ Parameters:   matrix = matrix to apply to point
+               point = point to have matrix applied to
+ Returns:      new point
+ ******************************************************************/
+point_t matrix_apply(matrix_t matrix, point_t point)
+{
+  point_t new;
+  new.x = matrix.a*point.x + matrix.c*point.y + matrix.e;
+  new.y = matrix.b*point.x + matrix.d*point.y + matrix.f;
+  return new;
+}
 
 /*************************************************** Gerph *********
  Function:      riscos_fontscanstring
@@ -2791,19 +2866,22 @@ static const riscos_fontmetrics_t riscos_fontmetrics[] = {
                 xsize = font x size
                 ysize = font y size
                 string-> the string we're sizing
+                matrix-> the matrix to use, or NULL if identity present
                 bbox-> the bbox to populate
  Returns:       1 if generated the string size; 0 if we failed
  ******************************************************************/
 int riscos_fontscanstring(const char *fontname, int32_t xsize, int32_t ysize,
-                          const char *string, riscos_fontstringbbox_t *bbox)
+                          const char *string, int *matrix,
+                          riscos_fontstringbbox_t *bbox)
 {
     const riscos_fontmetrics_t *metrics = &riscos_fontmetrics[0];
     while (metrics->fontname != NULL)
     {
-        if (strcmp(metrics->fontname, fontname) == 0)
+        if (stricmp(metrics->fontname, fontname) == 0)
             break;
         metrics++;
     }
+    dprintf("Found font: %s\n", metrics->fontname ? metrics->fontname : "NONE");
     if (metrics->fontname == NULL)
     {
         /* We didn't find the font. Return a failure. */
@@ -2815,8 +2893,8 @@ int riscos_fontscanstring(const char *fontname, int32_t xsize, int32_t ysize,
     {
         int32_t x = 0;
         int32_t y = 0;
-        uint32_t xscale = (xsize * FIXED_POINT_SCALE) / REFERENCE_XSIZE;
-        uint32_t yscale = (ysize * FIXED_POINT_SCALE) / REFERENCE_XSIZE;
+        int32_t xscale = (xsize * FIXED_POINT_SCALE) / REFERENCE_XSIZE;
+        int32_t yscale = (ysize * FIXED_POINT_SCALE) / REFERENCE_XSIZE;
         int i;
         bbox->x0 = 0;
         bbox->y0 = 0;
@@ -2825,6 +2903,7 @@ int riscos_fontscanstring(const char *fontname, int32_t xsize, int32_t ysize,
         for (i=0; string[i]>=' '; i++)
         {
             char c = string[i];
+            int32_t xadv, yadv;
             const riscos_fontchardetails_t *fcd = &metrics->chars[c - 32];
             riscos_fontstringbbox_t charbox;
             charbox.x0 = (fcd->x0 * xscale) / FIXED_POINT_SCALE;
@@ -2842,12 +2921,49 @@ int riscos_fontscanstring(const char *fontname, int32_t xsize, int32_t ysize,
             {
                 bbox->x0 = min(bbox->x0, x + min(charbox.x0, charbox.x1));
                 bbox->y0 = min(bbox->y0, y + min(charbox.y0, charbox.y1));
-                bbox->x1 = max(bbox->x0, x + max(charbox.x0, charbox.x1));
-                bbox->y1 = max(bbox->y0, y + max(charbox.y0, charbox.y1));
+                bbox->x1 = max(bbox->x1, x + max(charbox.x0, charbox.x1));
+                bbox->y1 = max(bbox->y1, y + max(charbox.y0, charbox.y1));
             }
-            x += (fcd->xadv * xscale) / FIXED_POINT_SCALE;
-            y += (fcd->yadv * yscale) / FIXED_POINT_SCALE;
+            xadv = (fcd->xadv * xscale) / FIXED_POINT_SCALE;
+            yadv = (fcd->yadv * yscale) / FIXED_POINT_SCALE;
+            x += xadv;
+            y += yadv;
+            dprintf("  char '%c' : %6i, %-6i - %6i, %-6i  + %6i, %-6i\n",
+                    c,
+                    charbox.x0, charbox.y0, charbox.x1, charbox.y1,
+                    xadv, yadv);
         }
+    }
+    if (matrix && (matrix[0] != 0x10000 || matrix[1] != 0x0 ||
+                   matrix[2] != 0x0     || matrix[3] != 0x10000 ||
+                   matrix[4] != 0x0     || matrix[5] != 0x0))
+    {
+        /* This is a real matrix, so we need to calculate the actual bounding box */
+        matrix_t mat = matrix_new(((float)matrix[0]) / 65536.0, ((float)matrix[1]) / 65536.0,
+                                  ((float)matrix[2]) / 65536.0, ((float)matrix[3]) / 65536.0,
+                                  ((float)matrix[4]), ((float)matrix[5]));
+        point_t bl, br;
+        point_t tl, tr;
+        dprintf("  matrix(%6.3f, %6.3f,\n", mat.a, mat.b);
+        dprintf("         %6.3f, %6.3f,\n", mat.c, mat.d);
+        dprintf("         %6.3f, %6.3f)\n", mat.e, mat.f);
+
+        bl.x = bbox->x0; bl.y = bbox->y0;
+        bl = matrix_apply(mat, bl);
+
+        br.x = bbox->x1; br.y = bbox->y0;
+        br = matrix_apply(mat, br);
+
+        tl.x = bbox->x0; tl.y = bbox->y1;
+        tl = matrix_apply(mat, tl);
+
+        tr.x = bbox->x1; tr.y = bbox->y1;
+        tr = matrix_apply(mat, tr);
+
+        bbox->x0 = min( min(bl.x, br.x), min(tl.x, tr.x));
+        bbox->x1 = max( max(bl.x, br.x), max(tl.x, tr.x));
+        bbox->y0 = min( min(bl.y, br.y), min(tl.y, tr.y));
+        bbox->y1 = max( max(bl.y, br.y), max(tl.y, tr.y));
     }
     return 1;
 }

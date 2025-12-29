@@ -298,15 +298,20 @@ static void compute_text_bbox(int n, char *s, int x, int y, int xs, int ys,
   {
     riscos_fontstringbbox_t bbox;
     if (!riscos_fontscanstring(fname[n], (xs+20)/40, (ys+20)/40,
-                               s, &bbox))
+                               s, matrix, &bbox))
     {
       /* Have to guess. Be pessimistic. */
-      bp[0]=x; bp[1]=y-xs/2;
-      bp[2]=x+xs*strlen(s); bp[3]=y+ys;
-      return;
+      warn("I do not know find `%s'; I'm going to use Homerton.Medium as a guess at its box",fname[n]);
+      if (!riscos_fontscanstring("Homerton.Medium", (xs+20)/40, (ys+20)/40,
+                                 s, matrix, &bbox))
+      {
+        bp[0]=x; bp[1]=y-xs/2;
+        bp[2]=x+xs*strlen(s); bp[3]=y+ys;
+        warn("... and that didn't work either, so I am making a wild guess");
+        return;
+      }
     }
     /* Now convert the result into the values we would see in zog */
-    /* FIXME: We *should* introduce the matrix here as well */
     zog[5] = bbox.x0;
     zog[6] = bbox.y0;
     zog[7] = bbox.x1;
@@ -342,6 +347,11 @@ static void compute_text_bbox(int n, char *s, int x, int y, int xs, int ys,
   }
   losefont(hdl);
 #endif
+  /*
+  printf("string bbox: %i, %i - %i, %i\n", zog[5], zog[6], zog[7], zog[8]);
+  if (matrix)
+      printf("  matrix: &%x, &%x; &%x, &%x; &%x, &%x\n", matrix[0], matrix[1], matrix[2], matrix[3], matrix[4], matrix[5] )
+   */
   bp[0]=x+(int)floor(zog[5]*0.64); bp[1]=y+(int)floor(zog[6]*0.64);
   bp[2]=x+(int)ceil(zog[7]*0.64); bp[3]=y+(int)ceil(zog[8]*0.64);
 }
