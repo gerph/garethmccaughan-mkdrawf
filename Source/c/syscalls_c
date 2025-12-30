@@ -67,7 +67,7 @@ int gstrans(char *str, char *buf, int len)
             terminator = ' ';
     }
     else if (space_terminator)
-        terminator == ' ';
+        terminator = ' ';
     while (*str != 0 && *str != '\n' && *str != '\r' && *str != terminator)
     {
         char c = *str++;
@@ -204,7 +204,7 @@ int load_file(char *filename, void *address)
 #else
     FILE *fh;
     long nbytes;
-    fh = fopen(newfilename, "rb");
+    fh = fopen(filename, "rb");
     if (fh == NULL)
         return -1;
     fseek(fh, 0, SEEK_END);
@@ -231,7 +231,7 @@ int file_size(char *filename)
 #else
     FILE *fh;
     long nbytes;
-    fh = fopen(newfilename, "rb");
+    fh = fopen(filename, "rb");
     if (fh == NULL)
         return -1;
     fseek(fh, 0, SEEK_END);
@@ -255,9 +255,12 @@ int settype(char *filename, int filetype)
 #else
     char newfilename[1024];
     int fail;
-    sprintf(newfilename, "filename,%03x", filetype);
+    sprintf(newfilename, "%s,%03x", filename, filetype);
     remove(newfilename);
+    dprintf("Renaming %s to %s\n", filename, newfilename);
     fail = rename(filename, newfilename);
+    if (fail)
+        dprintf("FAILED\n");
     return fail ? -1 : 0;
 #endif
 }

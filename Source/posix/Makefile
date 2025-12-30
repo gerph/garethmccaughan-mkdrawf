@@ -4,19 +4,29 @@ CFLAGS = -funsigned-char
 
 all: test decdrawf mkdrawf
 
-test: general.o \
+TEST_OBJS = general.o \
       mouth.o \
-      syscalls.o \
+      syscalls_c.o \
 	  test.o
 
-decdrawf: decdrawf.o \
+DEC_OBJS = decdrawf.o \
           lowfile_c.o
 
-mkdrawf: general.o \
+MK_OBJS = general.o \
          mouth.o \
          stomach.o \
-         syscalls.o \
+         syscalls_c.o \
+         fake_fontscanstring.o \
          tagfile.o
+
+test: ${TEST_OBJS}
+	${CC} ${TEST_OBJS} -o $@
+
+decdrawf: ${DEC_OBJS}
+	${CC} ${DEC_OBJS} -o $@
+
+mkdrawf: ${MK_OBJS}
+	${CC} ${MK_OBJS} -o $@
 
 clean:
 	rm -f *.o test decdrawf mkdrawf

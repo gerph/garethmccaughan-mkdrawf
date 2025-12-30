@@ -55,7 +55,7 @@ jobs:
       - name: Archive the built files
         run: |
           cd Source/posix
-          zip -9r ubuntu.zip decdrawf
+          zip -9r ubuntu.zip decdrawf mkdrawf
 
       - name: Give the output a versioned name
         id: version
