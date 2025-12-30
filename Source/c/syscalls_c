@@ -1,0 +1,263 @@
+/*******************************************************************
+ * File:        syscalls_c
+ * Purpose:     Replacements for the system calls assembler
+ * Author:      Gerph
+ * Date:        29 Dec 2025
+ ******************************************************************/
+
+#include <string.h>
+#include <stdlib.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <math.h>
+
+#ifdef __riscos
+#include "kernel.h"
+#include "swis.h"
+#endif
+
+#define MAXVARNAME (128)
+
+//#define DEBUGTHIS
+
+#ifdef DEBUGTHIS
+#define dprintf if (1) printf
+#else
+#define dprintf if (0) printf
+#endif
+
+
+
+/*************************************************** Gerph *********
+ Function:      gstrans
+ Description:   Perform OS_GSTrans
+ Parameters:    str-> the string to transform
+                buf-> output buffer
+                len = the length of the output buffer
+ Returns:       0 if successful, 1 if buffer overflow, 2 if error
+ ******************************************************************/
+int gstrans(char *str, char *buf, int len)
+{
+#ifdef __riscos64X
+    uint32_t x1, x2;
+    _kernel_oserror *err = _swix(OS_GSTrans, _INR(0, 2)|_OUTR(1, 2), str, buf, len, &x1, &x2);
+    if (err)
+        return 2;
+    if (x1 == 0 || x2 == len)
+        return 1;
+    return 0;
+
+#else
+
+    /* Non-RISC OS system */
+    int need = 0;
+    int actual_len = len & 0x1FFFFFFF;
+    bool space_terminator = len & (1u<<29);
+    bool pipes_special = ! (len & (1u<<30));
+    bool quotes_special = ! (len & (1u<<31));
+#define ACCUMULATE(c) do { if (need < actual_len) buf[need] = c; \
+                           need++; \
+                      } while (0)
+    int terminator = -1;
+    if (quotes_special)
+    {
+        if (*str == '"')
+            terminator = '"';
+        else
+            terminator = ' ';
+    }
+    else if (space_terminator)
+        terminator == ' ';
+    while (*str != 0 && *str != '\n' && *str != '\r' && *str != terminator)
+    {
+        char c = *str++;
+
+        if (c == '|')
+        {
+            int value = 0;
+            c = *str++;
+            if (c == 0 || c == '\n' || c == '\r')
+                return 2; /* Invalid string */
+            if (c=='!')
+            {
+                value = 128;
+                c = *str++;
+                if (c == 0 || c == '\n' || c == '\r')
+                    return 2; /* Invalid string */
+            }
+            if (c=='?')
+            {
+                c = 127;
+            }
+            else
+            {
+                if (c == '{' || c == '}' || c == '~') c -= 32;
+                if (c >= '@' && c <= '_')
+                    c -= 64;
+            }
+            c = value + c;
+            ACCUMULATE(c);
+            continue;
+        }
+        if (c != '<')
+        {
+            ACCUMULATE(c);
+            continue;
+        }
+
+        /* It's a variable or number */
+        /* FIXME: Strictly we should do a OS_ReadUnsigned here */
+        c = *str++;
+        if (c == 0 || c == '\n' || c == '\r')
+            return 2; /* Invalid string */
+        if (c >= '0' && c <='9')
+        {
+            /* Parse as a number */
+            int value = c - '0';
+            while (1)
+            {
+                c = *str++;
+                if (c == 0 || c == '\n' || c == '\r')
+                    return 2; /* Invalid string */
+                if (c >= '0' && c <='9')
+                {
+                    value = value * 10 + (c - '0');
+                }
+                else
+                {
+                    if (c != '>')
+                    {
+                        /* Badly terminated number (should probably allow spaces) */
+                        return 2;
+                    }
+                    else
+                    {
+                        /* Properly terminated, so end */
+                        break;
+                    }
+                }
+            }
+            c = value & 255;
+            ACCUMULATE(c);
+            continue;
+        }
+
+        /* Parse as a variable */
+        {
+            char varname[MAXVARNAME];
+            char *value;
+            int i = 0;
+            int valuelen;
+            while (i < MAXVARNAME-1)
+            {
+                c = *str++;
+                if (c == 0 || c == '\n' || c == '\r')
+                    return 2; /* Invalid string */
+                if (c == ' ')
+                    return 2; /* Invalid string */ /* FIXME: Not sure this is right */
+                if (c == '>')
+                    break;
+                varname[i++] = c;
+            }
+            if (i==MAXVARNAME-1)
+                return 2; /* Too long - we give up */
+            varname[i] = '\0';
+            value = getenv(varname);
+            if (value == NULL)
+            {
+                /* Variable has no value so we ignore it */
+                continue;
+            }
+            /* Need to accumulate the string */
+            valuelen = strlen(value);
+            if (need + valuelen < len)
+            {
+                memcpy(buf + need, value, valuelen);
+            }
+            need += valuelen;
+        }
+    }
+    if (terminator == '"' && *str != terminator)
+    {
+        /* This was an unterminated string, so fail */
+        return 2;
+    }
+    if (need >= len)
+        return 1;
+    return 0;
+#endif
+}
+
+
+int load_file(char *filename, void *address)
+{
+#ifdef __riscos
+    uint32_t len;
+    _kernel_oserror *err = _swix(OS_File, _INR(0, 3)|_OUT(4), 16, filename, address, 0, &len);
+    if (err)
+    {
+        dprintf("Failed to read file: %s\n", err->errmess);
+        return -1;
+    }
+    dprintf("Read file %.20s\n", address);
+    return len;
+#else
+    FILE *fh;
+    long nbytes;
+    fh = fopen(newfilename, "rb");
+    if (fh == NULL)
+        return -1;
+    fseek(fh, 0, SEEK_END);
+    nbytes = ftell(fh);
+    fseek(fh, 0, SEEK_SET);
+    fread(address, 1, nbytes, fh);
+    fclose(fh);
+    return nbytes;
+#endif
+}
+
+
+int file_size(char *filename)
+{
+#ifdef __riscos
+    uint32_t objtype;
+    uint32_t len;
+    _kernel_oserror *err = _swix(OS_File, _INR(0, 1)|_OUT(0)|_OUT(4), 17, filename, &objtype, &len);
+    if (err)
+        return -1;
+    if ((objtype & 1) == 0)
+        return -1; /* Not a file */
+    return len;
+#else
+    FILE *fh;
+    long nbytes;
+    fh = fopen(newfilename, "rb");
+    if (fh == NULL)
+        return -1;
+    fseek(fh, 0, SEEK_END);
+    nbytes = ftell(fh);
+    fclose(fh);
+    return nbytes;
+#endif
+}
+
+
+int settype(char *filename, int filetype)
+{
+#ifdef __riscos
+    _kernel_oserror *err = _swix(OS_File, _INR(0, 2), 18, filename, filetype);
+    if (err)
+    {
+        dprintf("Failed to set filetype: %s\n", err->errmess);
+        return -1;
+    }
+    return 0;
+#else
+    char newfilename[1024];
+    int fail;
+    sprintf(newfilename, "filename,%03x", filetype);
+    remove(newfilename);
+    fail = rename(filename, newfilename);
+    return fail ? -1 : 0;
+#endif
+}

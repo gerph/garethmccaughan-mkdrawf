@@ -5,8 +5,8 @@
 #
 # Program specific options:
 #
-#COMPONENT  = mkdrawf
-COMPONENT  = decdrawf
+COMPONENT  = mkdrawf
+#COMPONENT  = decdrawf
 
 # Specifies additional targets for startup
 #INITTARGET = inittarget
@@ -24,7 +24,7 @@ TYPE       = aif
 #TARGET = <filename>
 
 # Comma-separated list of paths to use for includes, such as:
-#	C:LibName.
+#   C:LibName.
 INCLUDES   =
 
 # Space separated list of defines to set, eg -DDEBUG
@@ -38,10 +38,10 @@ ifeq (${COMPONENT},test)
 OBJS       = o.general \
              o.mouth \
              o.syscalls \
-			 o.test
+             o.test
 endif
 ifeq (${COMPONENT},decdrawf)
-OBJS =	o.decdrawf
+OBJS =  o.decdrawf
 ifeq (${BUILD64},1)
 OBJS += o.lowfile_c
 else
@@ -52,9 +52,13 @@ ifeq (${COMPONENT},mkdrawf)
 OBJS       = o.general \
              o.mouth \
              o.stomach \
-             o.syscalls \
-             o.fake_fontscanstring \
              o.tagfile
+ifeq (${BUILD64},1)
+OBJS += o.fake_fontscanstring \
+        o.syscalls_c
+else
+OBJS += o.syscalls
+endif
 endif
 
 # Space separated list of XML files for building documentation.

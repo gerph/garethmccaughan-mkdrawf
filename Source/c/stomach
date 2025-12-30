@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "VersionNum"
 #include "mkdrawf.h"
@@ -19,7 +20,10 @@
 #include "exprofle.h"
 #endif
 
+#if !defined(__riscos) || defined(__riscos64)
 #define FAKE_FONTSCANSTRING
+#define SLOPPY /* We don't have Draw_ProcessPath */
+#endif
 
 #ifdef FAKE_FONTSCANSTRING
 #include "fake_fontscanstring.h"
@@ -384,12 +388,12 @@ static void compute_path_bbox(uint path, uint data, int *hdr, int size) {
     hdr[8],		/* width */
     ugh,		/* cap and join */
     (pst&128)?pp:0,	/* dash specification, if any */
-    (int*)(((int)(hdr+2))+0x80000000)	/* bounding box */
+    (int*)(((int)(hdr+2))+0x80000000u)	/* bounding box */
   );
   xfree(pp);
 }
 #else
-#define compute_path_bbox(x,y,z)
+#define compute_path_bbox(x,y,z,a) do { } while (0)
 #endif
 
 /* If we get an explicit <BoundingBox> keyword in a Group or Tagged
@@ -1480,7 +1484,7 @@ static void do_object(int k) {
 }
 
 #ifdef DEBUG
-extern int debug=0;
+int debug=0;
 #endif
 
 int main(int ac, char *av[]) {
@@ -1553,7 +1557,11 @@ bad_syntax:
   init_vars();
   for (i=0;i<256;++i) fname[i]=0;
   for (i=0;i<max_n_buffers;++i) buffers[i]=0;
+#if defined(__riscos) && !defined(__riscos64)
   srand(mono_time());
+#else
+  srand(time(NULL));
+#endif
   put_word(0x77617244,0);	/* Draw */
   put_word(201,1); put_word(0,2);	/* version number (of file format) */
   put_block((int*)"mkdrawf3    ",3,3);
@@ -1611,7 +1619,6 @@ bad_syntax:
     }
   }
   fclose(output_file);
-  sprintf(q,"SetType %s DrawFile",output_file_name);
-  system(q);
+  settype(output_file_name, 0xAFF); /* Set type as drawfile */
   return final_report();
 }

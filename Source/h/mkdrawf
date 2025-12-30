@@ -238,6 +238,7 @@ extern int processpath(int *path, int fill_style, int *matrix, int flatness,
 extern int gstrans(char *str, char *buf, int len);
 extern int file_size(char *name);
 extern int load_file(char *name, void *address);
+extern int settype(char *name, int filetype);
 extern int mono_time(void);
 
 #ifdef TAGS

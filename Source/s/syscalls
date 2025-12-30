@@ -135,24 +135,42 @@ file_size
 	MVNEQ r0,#0	; no, so return -1
 	MOVNE r0,r4	; yes, so return length
     [ {CONFIG} = 26
-    LDMNEFD sp!,{r4,r5,pc}^
+    LDMFD sp!,{r4,r5,pc}^
     |
-    LDMNEFD sp!,{r4,r5,pc}
+    LDMFD sp!,{r4,r5,pc}
     ]
 
 ; int load_file(char *name, void *address);
 ;  returns file length for success, -1 for failure.
 
-	EXPORT load_file
+    EXPORT load_file
 load_file
-	STMFD sp!,{r4,r5,lr}
-	MOV r2,r1	; address in r2
-	MOV r1,r0	; filename in r1
-	MOV r0,#16	; load named file, no path
-	MOV r3,#0	; use address in r2
-	SWI X_Bit+OS_File	; NB this zaps r4,r5
-	MVNVS r0,#0	; -1 if failure
-	MOVVC r0,r4	; file length
+    STMFD sp!,{r4,r5,lr}
+    MOV r2,r1   ; address in r2
+    MOV r1,r0   ; filename in r1
+    MOV r0,#16  ; load named file, no path
+    MOV r3,#0   ; use address in r2
+    SWI X_Bit+OS_File   ; NB this zaps r4,r5
+    MVNVS r0,#0 ; -1 if failure
+    MOVVC r0,r4 ; file length
+    [ {CONFIG} = 26
+    LDMFD sp!,{r4,r5,pc}^
+    |
+    LDMFD sp!,{r4,r5,pc}
+    ]
+
+; int settype(char *name, int filetype);
+;  returns 0, -1 for failure.
+
+    EXPORT settype
+settype
+    STMFD sp!,{r4,r5,lr}
+    MOV r2,r1   ; filetype in r2
+    MOV r1,r0   ; filename in r1
+    MOV r0,#18  ; set type
+    SWI X_Bit+OS_File   ; NB this zaps r4,r5
+    MVNVS r0,#0 ; -1 if failure
+    MOVVC r0,#0 ; ok
     [ {CONFIG} = 26
     LDMFD sp!,{r4,r5,pc}^
     |
