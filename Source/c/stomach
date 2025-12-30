@@ -70,14 +70,14 @@ static void put_block(int *from, uint to, uint size) {
   b1=(to+size-1)/buffer_size; a1=(to+size)-b1*buffer_size;
   /* make sure the space exists */
   while (b1>=n_buffers)
-    buffers[n_buffers++]=(int *)xmalloc(buffer_size*sizeof(Word),"a buffer");
-  if (b1==b0) { memcpy(buffers[b0]+a0,from,size*sizeof(Word)); return; }
-  memcpy(buffers[b0]+a0,from,(buffer_size-a0)*sizeof(Word));
-  memcpy(buffers[b1],from+size-a1,a1*sizeof(Word));
+    buffers[n_buffers++]=(int *)xmalloc(buffer_size*sizeof(uint32_t),"a buffer");
+  if (b1==b0) { memcpy(buffers[b0]+a0,from,size*sizeof(uint32_t)); return; }
+  memcpy(buffers[b0]+a0,from,(buffer_size-a0)*sizeof(uint32_t));
+  memcpy(buffers[b1],from+size-a1,a1*sizeof(uint32_t));
   from+=buffer_size-a0;
   /* now we've done both ends. What about the middle? */
   while (++b0<b1) {
-    memcpy(buffers[b0],from,buffer_size*sizeof(Word));
+    memcpy(buffers[b0],from,buffer_size*sizeof(uint32_t));
     from+=buffer_size;
   }
 }

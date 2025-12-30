@@ -3,6 +3,8 @@
  * Types, defines etc needed by both mouth.c and stomach.c
  */
 
+#include <stdint.h>
+
 #ifdef ONLINE_MEDIA
 #ifndef TAGS
 #define TAGS 1
@@ -12,15 +14,15 @@
 #endif
 #endif
 
-typedef unsigned int uint;
+typedef uint32_t uint;
 
 /* Something that can be held in a single word:
  */
 typedef union word {
-  int I;
+  int32_t I;
   uint U;
   char *CP;
-  int *IP;
+  int32_t *IP;
   void *VP;
   union word *WP;	/* we'll call this a |Word *| really */
   uint T;		/* |Type| */
@@ -35,7 +37,7 @@ typedef union word {
 /* Something that can be held in two words:
  */
 typedef union two_words {
-  int I; uint U; char *CP; int *IP; union word *WP;
+  int32_t I; uint U; char *CP; int32_t *IP; union word *WP;
   uint T; union two_words *PP; struct token *TP;
   struct looprec *LP; struct hashent *HP;
   void (*FP)(void);
