@@ -50,8 +50,8 @@ jobs:
         run: |
           cd Source/posix
 
-          # We can only build decdrawf at the moment
           make decdrawf
+          make mkdrawf
 
       - name: Archive the built files
         run: |
@@ -131,13 +131,13 @@ jobs:
           fi
           echo "This is version: $version"
           if [ -f /tmp/tools,a91 ] ; then
-              cp /tmp/tools,a91 "mkdrawf-tools-$version.zip"
+              cp /tmp/tools,a91 "mkdrawf-tools-riscos-$version.zip"
           else
               echo "No archive was built for tools?"
               exit 1
           fi
           if [ -f /tmp/goodies,a91 ] ; then
-              cp /tmp/goodies,a91 "mkdrawf-goodies-$version.zip"
+              cp /tmp/goodies,a91 "mkdrawf-goodies-riscos-$version.zip"
           else
               echo "No archive was built for goodies?"
               exit 1

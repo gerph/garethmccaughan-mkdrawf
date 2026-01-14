@@ -20,13 +20,13 @@ MK_OBJS = general.o \
          tagfile.o
 
 test: ${TEST_OBJS}
-	${CC} ${TEST_OBJS} -o $@
+	${CC} ${TEST_OBJS} -lm -o $@
 
 decdrawf: ${DEC_OBJS}
-	${CC} ${DEC_OBJS} -o $@
+	${CC} ${DEC_OBJS} -lm -o $@
 
 mkdrawf: ${MK_OBJS}
-	${CC} ${MK_OBJS} -o $@
+	${CC} ${MK_OBJS} -lm -o $@
 
 clean:
 	rm -f *.o test decdrawf mkdrawf
