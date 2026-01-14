@@ -38,7 +38,7 @@
  ******************************************************************/
 int gstrans(char *str, char *buf, int len)
 {
-#ifdef __riscos64X
+#ifdef __riscos
     uint32_t x1, x2;
     _kernel_oserror *err = _swix(OS_GSTrans, _INR(0, 2)|_OUTR(1, 2), str, buf, len, &x1, &x2);
     if (err)
