@@ -1,0 +1,64 @@
+This is release 3.11 for the `mkdrawf` tools. It has been released as open
+source software under the MIT license. The release here has been created
+from the last archives available, and updated to build for both RISC OS
+and for POSIX systems (with limitations). Other than the build for non-RISC OS
+systems, there are no functional improvements in this release.
+
+Changes from 3.10:
+
+* MIT license added.
+* Assembler code has been updated to be 32-bit safe (though will still build
+  for 26-bit is necessary).
+* C-specific variants of the assembler functions have been created for use
+  on non-RISC OS systems.
+* Documentation, where possible, has been updated to be in Latin-1 only rather
+  than using the RISC OS-specific 0x80-0x9F codes for hyphens, spaces and
+  quotation marks.
+* Git management files (.gitignore, .gitattributes, .github/*) have been added.
+* `mkdrawf` updated to build on non-RISC OS systems:
+    * It can use metrics for the standard RISC OS fonts and a custom text
+      sizer. Right-to-left text and kerning are not supported.
+    * GSTrans replacement function, using environment variables.
+    * Bounding boxes for paths use the 'sloppy' method of calculating the size
+      of the path. This will result in incorrect boxes, but the Drawfile
+      should be usable.
+* CI builds should now be created, and a release process will allow these
+  to be created for others to use.
+* GitHub issue and PR templates exist to help others contribute.
+
+
+
+Statement from Gareth McCaughan, 6th December 2025:
+
+------
+Well, as I haven't touched it for literally decades:
+
+I hereby release the sources for mkdrawf under the MIT licence.
+
+To be explicit:
+
+mkdrawf is copyright (C) 1995-1998 Gareth McCaughan.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+the mkdrawf software and associated documentation files (the "Software"), to
+deal in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+The above is a brief copyright notice plus exactly the standard text of the MIT
+Licence except that for clarity I have written "the mkdrawf software" instead of
+"this software". If you are putting it on GitHub, then adding a file called
+LICENCE or LICENSE or something containing "Copyright (C) 1995-1998 Gareth
+McCaughan" plus exactly the usual MIT Licence text is entirely acceptable to me.
+------

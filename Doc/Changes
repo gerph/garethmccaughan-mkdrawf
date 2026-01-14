@@ -113,4 +113,4 @@ admin:        transferred to GitHub, under MIT license
 new features: none
 improvements: `decdrawf`, `mkdrawf` and Goodies directory compiled
               for 26/32-bit RISC OS.
-              `decdrawf` compilable for POSIX systems.
+              `decdrawf`, `mkdrawf` compilable for POSIX systems.
